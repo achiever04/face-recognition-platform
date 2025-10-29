@@ -1,10 +1,8 @@
-# README.md
-
 # Intelligent Multi-Camera Face Recognition Platform
 
 ## Project Title
 
-Intelligent Multi-Camera Face Recognition Platform for Public Safety, Missing Person, and Criminal Identification
+Intelligent Multi-Camera Face Recognition Platform for Public Safety, Missing Person Identification, and Criminal Detection
 
 ## Objective
 
