@@ -1,0 +1,69 @@
+# docker-compose.yml
+version: "3.8"
+
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: frp_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+
+  redis:
+    image: redis:7.2
+    container_name: frp_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: frp_backend
+    # If you don't have a Dockerfile in backend, start with a simple python image command:
+    # image: python:3.11-slim
+    restart: always
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./backend/data:/app/backend/data
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+      - redis
+    command: >
+      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  frontend:
+    image: node:20-alpine
+    container_name: frp_frontend
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install --silent && npm run dev -- --host"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+
+  mock-camera-worker:
+    image: python:3.11-slim
+    container_name: frp_mock_camera
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app/backend:ro
+      - ./data:/app/data:ro
+    depends_on:
+      - backend
+    command: >
+      sh -c "pip install --no-cache-dir fastapi==0.95.2 && python -u /app/backend/tools/mock_camera_worker.py || sleep 5s"
+
+volumes:
+  mongo_data:
