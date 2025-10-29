@@ -1,0 +1,34 @@
+/* frontend/src/index.css */
+
+/* --- FIX: Added missing base and components directives --- */
+/* Inject Tailwind's base styles, component classes, and utility classes. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Add any custom global styles or base layer customizations here */
+body {
+  /* This @apply rule should now work correctly */
+  @apply bg-gray-900 text-gray-200 font-sans; /* Example global style */
+  /* Ensures background color is applied even outside the main App div */
+  min-height: 100vh;
+}
+
+/* Custom scrollbar styling (optional, works in WebKit browsers like Chrome/Safari) */
+::-webkit-scrollbar {
+  width: 8px; /* Width of the scrollbar */
+}
+
+::-webkit-scrollbar-track {
+  background: #2d3748; /* bg-gray-800 */
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #4a5568; /* bg-gray-600 */
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #718096; /* bg-gray-500 */
+}

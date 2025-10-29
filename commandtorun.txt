@@ -1,0 +1,282 @@
+cd backend
+python3 -m venv venv
+source venv/bin/activate   # (on Ubuntu)
+source venv310/bin/activate
+uvicorn app.main:app --reload
+
+
+
+
+cd frontend
+npm run dev
+
+
+
+
+
+
+systemctl status mongod
+sudo systemctl enable mongod
+
+sudo systemctl start mongod
+
+
+
+
+1start with this 
+1. Feed Switching (Next Step)
+first list all file need to updated and in order of updating. 
+
+
+
+give me complete updated code and 
+note do not miss any lines of code.
+
+
+give me complete updated code and 
+note do not miss any lines of code and 
+any functionality of my project folllw these instruction strictly. 
+here is code.
+
+
+give me complete updated code and 
+note do not miss any lines of code.
+
+here is code.
+
+
+
+
+
+
+2. Better Alerts UI
+
+Goal: Make alerts more useful and less noisy.
+
+Steps:
+
+Color-code alerts:
+
+🔴 if distance < 0.4 (high confidence).
+
+🟡 if 0.4 ≤ distance < 0.6 (medium).
+
+⚪ otherwise.
+
+Group alerts by target person → show the latest location per person instead of listing duplicates.
+
+Add a collapsible “History” section if the officer wants full details.
+
+3. Admin/Officer Panel (Optional)
+
+Goal: Give officers control over detections.
+
+Steps:
+
+New React page → /admin.
+
+Table view of all logs from MongoDB.
+
+Buttons: ✅ Confirm / ❌ Reject detection.
+
+Search bar by target name → filter logs.
+
+Store confirmation status in MongoDB.
+
+4. Tracking per Criminal File (Your New Request)
+
+Goal: Keep a separate file for each uploaded target to log their movement path across cameras.
+
+Steps:
+
+When uploading a face, take the filename (e.g., john_doe.jpg).
+
+In backend (db.py or camera.py):
+
+Create/open a file named logs/john_doe.txt.
+
+Append each movement entry like:
+
+[2025-09-19 19:30:22] Detected at Camera 2 (Main Gate, Geo=XYZ)
+
+
+This way, each criminal has their own path file.
+
+Optionally → also keep JSON format for structured history.
+
+5. Advanced Features (Most Important)
+5.1 Privacy-Preserving Recognition (Federated Learning)
+
+Instead of storing raw images, train/update embeddings locally and share only weights.
+
+Steps:
+
+Store embeddings only, never raw photos.
+
+Add optional encryption before storing face vectors.
+
+Prepare design for federated learning (PyTorch Federated or Flower library).
+
+5.2 DeepFake Detection in Streams
+
+Detect if the detected face is synthetic/fake.
+
+Steps:
+
+Integrate a pretrained DeepFake detection model (e.g., XceptionNet or Vision Transformer based).
+
+Run inference on frames before recognition.
+
+If fake → log separately (deepfake_logs).
+
+5.3 Blacklist/Watchlist Geo-Fencing
+
+Define restricted zones for criminals.
+
+Steps:
+
+Extend DB schema with watchlist (target + allowed zones).
+
+If detected outside allowed zone → raise an urgent alert.
+
+UI should highlight with 🚨.
+
+5.4 Occlusion Handling (Masks, Helmets)
+
+Detect face occlusions before recognition.
+
+Steps:
+
+Use pretrained occlusion detection model (YOLO or CNN-based).
+
+If face is occluded → run masked-face recognition model (ArcFace trained with masks).
+
+Store “occluded detection” separately in DB for officer review.
+
+🚀 Execution Order (Roadmap)
+
+Feed Switching (UI logic) ✅
+
+Better Alerts UI
+
+Criminal-specific tracking files
+
+Admin Panel (optional)
+
+Advanced Features (priority)
+
+Privacy-preserving recognition
+
+DeepFake detection
+
+Blacklist/geo-fencing
+
+Occlusion handling
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2. main.py (backend/app/main.py)
+
+Update /face/upload endpoint:
+
+Remove raw image saving (or make optional).
+
+Store only embedding (encrypted if implemented).
+
+Add new endpoint(s) for sending/receiving federated weights:
+
+e.g., /face/fl/upload_weights, /face/fl/get_weights.
+
+3. camera.py (backend/app/routes/camera.py)
+
+Modify the recognition pipeline to work with embeddings only.
+
+Optional: Integrate local model update logic for federated learning before comparing with server embeddings.
+
+4. state.py (backend/app/state.py)
+
+Store embeddings in memory or temporary encrypted form.
+
+Add structures for federated learning weights (e.g., per client).
+
+5. Frontend (App.jsx or separate FL dashboard)
+
+Optional: Interface to trigger FL model updates from client devices.
+
+Display current FL status per camera/client.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Perfect ✅ You’re asking the right thing — the order matters so imports don’t break.
+Here’s the safe order of implementation so you won’t get errors while adding RetinaFace + MobileNetV3 DeepFake detection:
+
+📌 Implementation Order
+
+backend/app/state.py (Update first)
+
+Define placeholders for models (DEEPFAKE_MODEL, RETINAFACE_DETECTOR).
+
+This ensures other files can import them safely without crashing.
+
+backend/app/utils/deepfake_utils.py (New)
+
+Write helpers to load RetinaFace + MobileNetV3 and run detection/classification.
+
+This will use the globals defined in state.py.
+
+backend/app/utils/db.py (Update)
+
+Add function to log DeepFake detection results into deepfake_logs.
+
+Keeps consistency with how you store embeddings.
+
+backend/app/routes/deepfake.py (New)
+
+Expose /face/deepfake_detect endpoint.
+
+Calls functions from deepfake_utils.py and stores logs with db.py.
+
+backend/app/main.py (Update)
+
+Register the new DeepFake router so FastAPI knows about it.
+
+frontend/src/api.js (Update last)
+
+Add detectDeepFake() API call for frontend integration.
