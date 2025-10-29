@@ -176,3 +176,10 @@ yarn-error.log*
 # Logs
 logs/*.log
 *.log.[0-9]*
+
+# Add to repo root .gitignore (or append if already present)
+
+# Local envs
+/backend/.env
+/.env.local
+.env

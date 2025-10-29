@@ -1,0 +1,18 @@
+# backend/requirements.pinned.txt
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+pydantic==1.10.11
+motor==3.1.1            # async mongo driver
+python-dotenv==1.0.0
+numpy==1.26.4
+opencv-python==4.8.1.78
+pillow==10.1.0
+requests==2.31.0
+aiohttp==3.9.4
+redis==5.0.10
+python-multipart==0.0.6
+torch==2.2.0            # if using PyTorch; change if using TF
+torchvision==0.17.0
+tqdm==4.66.1
+faiss-cpu==1.7.4        # use 'faiss-gpu' on machines with CUDA
+moviepy==1.0.3

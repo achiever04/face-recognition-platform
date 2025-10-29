@@ -5,6 +5,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import socketio # Import the main library
+# backend/app/main.py (insert near other imports)
+from app.routes import snapshot as snapshot_router  # new file we added
+from app.health_checks import init_health_checks
+
 
 # --- State and Routers ---
 # Import the state module itself to access variables within functions
