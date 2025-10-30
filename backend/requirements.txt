@@ -1,33 +1,63 @@
 # backend/requirements.txt
+# Pinned versions taken from your working virtualenv for compatibility
 
-# Core FastAPI framework
-fastapi==0.111.0
-uvicorn[standard]==0.29.0 # Includes websockets support
+# Web / API
+fastapi==0.116.1
+uvicorn==0.35.0
+starlette==0.47.3
 
-# Face Recognition & Image Processing
+# Validation / env
+pydantic==2.11.7
+python-dotenv==1.1.0
+
+# Database
+pymongo==4.15.0
+
+# Upload parsing
+python-multipart==0.0.20
+
+# Scientific / Imaging / Video
+numpy==2.2.6
+opencv-python==4.12.0.88
+Pillow==11.3.0
+imageio==2.37.0
+moviepy==1.0.3
+
+# Face recognition stack
 face_recognition==1.3.0
-dlib==20.0.0 # Dependency for face_recognition
-numpy==1.26.4
-opencv-python-headless==4.9.0.80 # Use headless if no GUI needed
+face_recognition_models==0.3.0
+dlib==20.0.0
 
-# Database & Encryption
-pymongo==4.7.2
-cryptography==42.0.7
-python-dotenv==1.0.1 # For loading .env files
+# Deep learning (PyTorch) - pinned to local environment
+torch==2.8.0
+torchvision==0.23.0
 
-# Real-time Communication
+# InsightFace & ONNX runtime
+insightface==0.7.3
+onnxruntime==1.22.1
+onnx==1.19.0
+
+# Index/search
+faiss-cpu==1.7.4
+
+# Networking / async / sockets
+requests==2.32.4
+aiohttp==3.9.4
+redis==5.0.10
 python-socketio==5.11.2
-# Note: uvicorn[standard] already includes 'websockets'
 
-# Deepfake & AI (Dependencies for insightface, torch, etc.)
-insightface==0.7.3 # Install insightface if using RetinaFace
-onnxruntime==1.17.3 # Dependency for insightface CPU
-torch==2.3.0        # If using PyTorch models (like MobileNetV3)
-torchvision==0.18.0 # If using PyTorch models
+# Notifications
+twilio==8.11.1
 
-# Notifications (Optional, if implementing SMS)
-twilio==8.11.1 # Example SMS provider
+# Utilities / ML helpers
+scikit-learn==1.7.2
+tqdm==4.67.1
 
-# Other Utilities
-pydantic==2.7.1 # For data validation models
-python-multipart==0.0.9 # For handling file uploads in FastAPI
+# Optional / recommended
+cryptography==45.0.5
+python-dateutil==2.9.0.post0
+
+# NOTE:
+# - If you run the backend in a headless environment, consider replacing
+#   'opencv-python' with 'opencv-python-headless==4.12.0.88'
+# - For GPU-enabled PyTorch, install the appropriate torch + torchvision build for your CUDA.

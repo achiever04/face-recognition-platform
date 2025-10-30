@@ -1,218 +1,337 @@
-# --- NEW IMPORTS ---
-import os
-from dotenv import load_dotenv
-# --- END NEW IMPORTS ---
+# backend/app/utils/db.py
+"""
+Database utilities for the Face Recognition Platform.
 
-from pymongo import MongoClient, ASCENDING, DESCENDING
-from datetime import datetime, timedelta
-# import os # Already imported above
+Goals and features:
+- Robust MongoDB connection with retries and sensible defaults.
+- Safe encryption key handling for embeddings (Fernet).
+- Safe file-based logging helpers (append JSON/text).
+- Convenience helpers to get DB/collection objects, with optional persistence hooks.
+- Backwards-compatible API: all previous function names/signatures retained.
+"""
+
+import os
+import time
 import json
 import base64
+import logging
 from pathlib import Path
-from cryptography.fernet import Fernet
-from bson import ObjectId
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 
-# --- NEW: Load environment variables from .env file ---
-# This should be called early, before accessing environment variables.
-load_dotenv()
-print("[DB] Loaded environment variables from .env")
+from pymongo import MongoClient, ASCENDING, DESCENDING, errors as pymongo_errors
+from bson import ObjectId
+
+# Optional guarded imports
+try:
+    from cryptography.fernet import Fernet
+except Exception:
+    Fernet = None  # will fail later if encryption is required
+
+# dotenv load (safe to call again)
+from dotenv import load_dotenv
+
+load_dotenv()  # best-effort; existing code did this as well
+
+# Setup module logger (keeps prior prints but routes through logging)
+logger = logging.getLogger("app.utils.db")
+if not logger.handlers:
+    # Basic console handler as default; your main app logging may reconfigure this
+    ch = logging.StreamHandler()
+    formatter = logging.Formatter("[DB] %(asctime)s %(levelname)s: %(message)s")
+    ch.setFormatter(formatter)
+    logger.addHandler(ch)
+logger.setLevel(os.getenv("DB_LOG_LEVEL", "INFO").upper())
 
 # -------------------------------
-# MongoDB Connection with retry logic
-# --- UPGRADED ---
+# MongoDB connection (singleton)
 # -------------------------------
-def get_mongo_client(max_retries=3):
-    """Create MongoDB client with connection retry, using .env variables."""
-    # --- IMPROVEMENT: Read URI from environment variable, provide default ---
-    mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-    print(f"[DB] Connecting to MongoDB at: {mongo_uri.split('@')[-1]}") # Log URI without credentials
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "face_recognition_db")
+_MONGO_CONNECT_RETRIES = int(os.getenv("MONGO_CONNECT_RETRIES", "3"))
+_MONGO_CONNECT_BACKOFF = float(os.getenv("MONGO_CONNECT_BACKOFF", "2.0"))  # seconds base
 
-    for attempt in range(max_retries):
+_client: Optional[MongoClient] = None
+
+
+def get_mongo_client(max_retries: int = _MONGO_CONNECT_RETRIES) -> MongoClient:
+    """
+    Return a global MongoClient, connecting with retries.
+    This function reuses a module-level client to avoid creating multiple clients.
+    """
+    global _client
+    if _client is not None:
+        return _client
+
+    logger.info("Connecting to MongoDB: %s", MONGO_URI.split("@")[-1])
+    attempt = 0
+    last_exc = None
+    while attempt < max_retries:
+        attempt += 1
         try:
-            client = MongoClient(
-                mongo_uri, # Use the URI from .env
-                serverSelectionTimeoutMS=5000
-            )
-            # Test connection
-            client.admin.command('ping')
-            print("[DB] MongoDB connection successful.")
-            return client
+            client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+            # Ping to verify connection
+            client.admin.command("ping")
+            _client = client
+            logger.info("MongoDB connection successful (db=%s)", MONGO_DB_NAME)
+            # Ensure indexes are created (idempotent)
+            ensure_indexes(client[MONGO_DB_NAME])
+            return _client
         except Exception as e:
-            if attempt < max_retries - 1:
-                print(f"MongoDB connection attempt {attempt + 1} failed, retrying...")
-                import time
-                time.sleep(2)
-            else:
-                print(f"MongoDB connection failed after {max_retries} attempts: {e}")
-                raise
+            last_exc = e
+            logger.warning(
+                "MongoDB connection attempt %d/%d failed: %s",
+                attempt,
+                max_retries,
+                str(e),
+            )
+            if attempt < max_retries:
+                sleep_time = _MONGO_CONNECT_BACKOFF * attempt
+                logger.info("Retrying in %.1f seconds...", sleep_time)
+                time.sleep(sleep_time)
+    logger.critical("MongoDB connection failed after %d attempts: %s", max_retries, last_exc)
+    raise last_exc
 
-client = get_mongo_client()
 
-# Database
-# --- IMPROVEMENT: Read DB Name from environment variable ---
-db_name = os.getenv("MONGO_DB_NAME", "face_recognition_db")
-db = client[db_name]
-print(f"[DB] Using database: {db_name}")
+def close_mongo_client():
+    """Close and drop the module-level Mongo client (useful on shutdown)."""
+    global _client
+    try:
+        if _client:
+            _client.close()
+            _client = None
+            logger.info("MongoDB client closed.")
+    except Exception:
+        logger.exception("Error closing MongoDB client (ignored)")
 
-# Collections
-faces_collection = db["faces"]
-logs_collection = db["logs"]          # For high-priority Alerts
-deepfake_collection = db["deepfakes"]
-tracking_collection = db["tracking"]  # For every single detection (Movement Log)
-config_collection = db["config"]      # For persistent watchlist & geofences
 
-# Ensure indexes (No changes needed here)
-# ... (indexes remain the same) ...
-logs_collection.create_index(
-    [("target", ASCENDING), ("camera_id", ASCENDING), ("timestamp", ASCENDING)]
-)
-deepfake_collection.create_index(
-    [("camera_id", ASCENDING), ("timestamp", ASCENDING)]
-)
-tracking_collection.create_index(
-    [("person", ASCENDING), ("timestamp", DESCENDING)]
-)
-config_collection.create_index(
-    "name", unique=True
-)
+def get_db():
+    """Convenience: return the configured database handle (ensures connection)."""
+    client = get_mongo_client()
+    return client[MONGO_DB_NAME]
+
+
+def get_collection(name: str):
+    """Return a collection handle for the configured DB."""
+    db = get_db()
+    return db[name]
+
 
 # -------------------------------
-# Ensure directories exist (No changes needed here)
-# ... (directory creation remains the same) ...
-LOGS_DIR = "logs"
-DEEPFAKE_LOGS_DIR = "data/deepfake_logs"
+# Collections & directories (setup)
+# -------------------------------
+db = get_db()
+faces_collection = db["faces"]
+logs_collection = db["logs"]
+deepfake_collection = db["deepfakes"]
+tracking_collection = db["tracking"]
+config_collection = db["config"]
+
+# File-based logs paths (ensure they exist)
+LOGS_DIR = os.getenv("LOGS_DIR", "logs")
+DEEPFAKE_LOGS_DIR = os.getenv("DEEPFAKE_LOGS_DIR", "data/deepfake_logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(DEEPFAKE_LOGS_DIR, exist_ok=True)
 
 # -------------------------------
-# ✅ FIX: Persistent Encryption Key
-# --- UPGRADED ---
+# Encryption key handling
 # -------------------------------
-# --- IMPROVEMENT: Read key path from environment variable ---
-key_path_str = os.getenv("ENCRYPTION_KEY_PATH", "data/.encryption_key")
-KEY_FILE = Path(key_path_str)
-print(f"[DB] Using encryption key path: {KEY_FILE.resolve()}")
+ENCRYPTION_KEY_PATH = os.getenv("ENCRYPTION_KEY_PATH", "data/.encryption_key")
+DISABLE_ENCRYPTION = os.getenv("DISABLE_ENCRYPTION", "false").lower() in ("1", "true", "yes")
+KEY_FILE = Path(ENCRYPTION_KEY_PATH)
+KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-# Ensure parent directory exists
-KEY_FILE.parent.mkdir(parents=True, exist_ok=True) # Added parents=True
+ENCRYPTION_KEY: Optional[bytes] = None
+fernet: Optional["Fernet"] = None  # type: ignore
 
-if KEY_FILE.exists():
-    ENCRYPTION_KEY = KEY_FILE.read_bytes()
-    print("[DB] Loaded existing encryption key.")
+if DISABLE_ENCRYPTION:
+    logger.info("Embedding encryption disabled via DISABLE_ENCRYPTION=true")
 else:
-    print("[DB] Generating new encryption key...")
-    ENCRYPTION_KEY = Fernet.generate_key()
-    KEY_FILE.write_bytes(ENCRYPTION_KEY)
-    KEY_FILE.chmod(0o600)  # Secure permissions
-    print(f"[DB] New encryption key saved to {KEY_FILE.resolve()}")
+    if KEY_FILE.exists():
+        try:
+            ENCRYPTION_KEY = KEY_FILE.read_bytes()
+            logger.info("Loaded existing encryption key from %s", KEY_FILE.resolve())
+        except Exception:
+            logger.exception("Failed to read encryption key file - attempting to generate a new key")
+            ENCRYPTION_KEY = None
 
-try:
-    fernet = Fernet(ENCRYPTION_KEY)
-except Exception as e:
-    print(f"[DB] CRITICAL: Failed to initialize Fernet with encryption key: {e}")
-    # Decide how to handle this - maybe raise an exception to stop startup?
-    raise SystemExit(f"Invalid encryption key found at {KEY_FILE.resolve()}. Please check or delete the file.")
+    if ENCRYPTION_KEY is None:
+        # Generate and save key (safe file permissions)
+        if Fernet is None:
+            logger.critical("cryptography.Fernet not available but encryption is required. Set DISABLE_ENCRYPTION=true to continue.")
+            raise RuntimeError("cryptography is required for embedding encryption")
+        ENCRYPTION_KEY = Fernet.generate_key()
+        try:
+            KEY_FILE.write_bytes(ENCRYPTION_KEY)
+            KEY_FILE.chmod(0o600)
+            logger.info("Generated and stored new encryption key at %s", KEY_FILE.resolve())
+        except Exception:
+            logger.exception("Failed to persist generated encryption key (attempting in-memory only)")
 
-def encrypt_embedding(embedding: list) -> str:
-    """Encrypt a face embedding and return base64 string."""
-    json_bytes = json.dumps(embedding).encode("utf-8")
-    encrypted = fernet.encrypt(json_bytes)
-    return base64.b64encode(encrypted).decode("utf-8")
-
-def decrypt_embedding(encrypted_str: str) -> list:
-    """Decrypt a base64 encrypted embedding string."""
+    # Create Fernet instance
     try:
-        encrypted_bytes = base64.b64decode(encrypted_str)
-        decrypted_bytes = fernet.decrypt(encrypted_bytes)
-        return json.loads(decrypted_bytes.decode("utf-8"))
+        if ENCRYPTION_KEY:
+            fernet = Fernet(ENCRYPTION_KEY)  # type: ignore
     except Exception as e:
-        # Avoid printing sensitive info in logs if decryption fails
-        # print(f"[DB] Decryption failed: {e}")
-        print(f"[DB] Decryption failed for a stored embedding.")
-        return []
-
-# --- Rest of the file remains the same ---
-# JSON Serialization Helper, File Logging Helpers, log_alert, log_deepfake,
-# store/retrieve embeddings, retrieve_all_embeddings,
-# save/load watchlist, save/load geofences, save/load tracking, clear history
-# ... (all these functions stay exactly as they were in the previous version) ...
+        logger.exception("Failed to initialize Fernet encryption: %s", e)
+        raise SystemExit("Invalid encryption key - check ENCRYPTION_KEY_PATH or set DISABLE_ENCRYPTION=true")
 
 # -------------------------------
-# JSON Serialization Helper
+# Utility helpers
 # -------------------------------
+def iso_now() -> str:
+    """Return timezone-naive ISO string for now (consistent format used in DB entries)."""
+    return datetime.utcnow().isoformat()  # UTC timestamps
+
 def json_serialize(doc: dict) -> dict:
-    """Convert MongoDB ObjectId to strings."""
+    """Convert MongoDB ObjectId to strings and handle nested docs safely."""
     if not doc:
         return {}
-    new_doc = doc.copy() # Avoid modifying original
-    for key, value in new_doc.items():
-        if isinstance(value, ObjectId):
-            new_doc[key] = str(value)
+    new_doc = {}
+    for k, v in doc.items():
+        if isinstance(v, ObjectId):
+            new_doc[k] = str(v)
+        else:
+            try:
+                json.dumps(v)
+                new_doc[k] = v
+            except TypeError:
+                # fallback: convert to str
+                new_doc[k] = str(v)
     return new_doc
 
 # -------------------------------
-# File Logging Helpers
+# Embedding encryption helpers (backwards-compatible)
+# -------------------------------
+def encrypt_embedding(embedding: List[float]) -> str:
+    """
+    Encrypt a face embedding and return base64 encoded encrypted blob.
+    If encryption is disabled, return JSON string of the embedding.
+    """
+    try:
+        if DISABLE_ENCRYPTION or fernet is None:
+            return json.dumps(embedding)
+        raw = json.dumps(embedding).encode("utf-8")
+        encrypted = fernet.encrypt(raw)  # type: ignore
+        return base64.b64encode(encrypted).decode("utf-8")
+    except Exception:
+        logger.exception("encrypt_embedding failed - returning plaintext fallback")
+        return json.dumps(embedding)
+
+
+def decrypt_embedding(encrypted_str: str) -> List[float]:
+    """
+    Decrypt a stored embedding (base64 encrypted) or parse plaintext JSON if encryption disabled.
+    Returns list of floats (or empty list on error).
+    """
+    try:
+        if DISABLE_ENCRYPTION or fernet is None:
+            return json.loads(encrypted_str)
+        encrypted = base64.b64decode(encrypted_str)
+        decrypted = fernet.decrypt(encrypted)  # type: ignore
+        return json.loads(decrypted.decode("utf-8"))
+    except Exception:
+        logger.exception("decrypt_embedding failed for an entry (returning empty list)")
+        return []
+
+# -------------------------------
+# Index creation (idempotent)
+# -------------------------------
+def ensure_indexes(db_handle):
+    """Create indexes in an idempotent way."""
+    try:
+        db_handle["logs"].create_index([("target", ASCENDING), ("camera_id", ASCENDING), ("timestamp", ASCENDING)])
+        db_handle["deepfakes"].create_index([("camera_id", ASCENDING), ("timestamp", ASCENDING)])
+        db_handle["tracking"].create_index([("person", ASCENDING), ("timestamp", DESCENDING)])
+        db_handle["config"].create_index("name", unique=True)
+        logger.info("Ensured database indexes.")
+    except Exception:
+        logger.exception("Failed to ensure indexes (non-fatal)")
+
+# call ensure_indexes once (safe)
+try:
+    ensure_indexes(db)
+except Exception:
+    logger.exception("Index creation encountered an error at startup")
+
+# -------------------------------
+# File logging helpers (robust)
 # -------------------------------
 def append_log_text(target: str, message: str):
-    """Append plain text log entry."""
     filename = os.path.join(LOGS_DIR, f"{target}.txt")
     try:
+        # Atomic append
         with open(filename, "a", encoding="utf-8") as f:
             f.write(message + "\n")
-    except Exception as e:
-        print(f"[FileLog] Error writing text log for {target}: {e}")
+    except Exception:
+        logger.exception("Error writing text log for %s", target)
+
 
 def append_log_json(target: str, entry: dict):
-    """Append structured JSON log entry."""
     filename = os.path.join(LOGS_DIR, f"{target}.json")
-    data = []
     try:
+        existing = []
         if os.path.exists(filename):
             try:
                 with open(filename, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except json.JSONDecodeError:
-                print(f"[FileLog] Warning: Could not decode existing JSON log for {target}. Starting fresh.")
-                data = []
+                    existing = json.load(f)
+                    if not isinstance(existing, list):
+                        existing = []
+            except Exception:
+                logger.warning("Could not decode existing JSON log for %s - starting fresh", target)
+                existing = []
 
-        data.append(json_serialize(entry)) # Serialize before appending
+        existing.append(json_serialize(entry))
+        # Write atomically
+        tmpf = filename + ".tmp"
+        with open(tmpf, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2)
+        os.replace(tmpf, filename)
+    except Exception:
+        logger.exception("Error writing JSON log for %s", target)
 
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        print(f"[FileLog] Error writing JSON log for {target}: {e}")
 
 def create_target_log_files(target: str):
-    """Ensure log files exist for target."""
     txt_file = os.path.join(LOGS_DIR, f"{target}.txt")
     json_file = os.path.join(LOGS_DIR, f"{target}.json")
     try:
         if not os.path.exists(txt_file):
-            with open(txt_file, "w", encoding="utf-8") as f:
-                f.write("")
+            with open(txt_file, "w", encoding="utf-8"):
+                pass
         if not os.path.exists(json_file):
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump([], f, indent=2)
-    except Exception as e:
-        print(f"[FileLog] Error creating log files for {target}: {e}")
+    except Exception:
+        logger.exception("Error creating log files for %s", target)
 
 # -------------------------------
-# Log Recognition Event (Alerts)
+# DB insert wrapper with retries (used by log functions)
+# -------------------------------
+def _safe_insert(collection, doc: dict, max_retries: int = 2) -> Optional[Any]:
+    for attempt in range(1, max_retries + 1):
+        try:
+            res = collection.insert_one(doc)
+            return res
+        except pymongo_errors.AutoReconnect as e:
+            logger.warning("AutoReconnect on insert, attempt %d/%d: %s", attempt, max_retries, e)
+            time.sleep(0.5 * attempt)
+        except Exception:
+            logger.exception("Insert failed unexpectedly (non-fatal)")
+            break
+    return None
+
+# -------------------------------
+# Log recognition event (Alerts) - original behavior preserved
 # -------------------------------
 def log_alert(camera_id: int, camera_name: str, geo: str, target: str, distance: float, cooldown: int = 10):
-    """Insert recognition event with duplicate prevention."""
-    now = datetime.now()
+    now = datetime.utcnow()
     cutoff_time = now - timedelta(seconds=cooldown)
-
     try:
-        # Check for duplicate
         duplicate = logs_collection.find_one({
             "target": target,
             "camera_id": camera_id,
             "timestamp": {"$gte": cutoff_time.isoformat()}
         })
-
         if duplicate:
             return False
 
@@ -225,216 +344,225 @@ def log_alert(camera_id: int, camera_name: str, geo: str, target: str, distance:
             "timestamp": now.isoformat()
         }
 
-        result = logs_collection.insert_one(log_entry)
-        log_entry_serialized = json_serialize(log_entry) # Serialize before file logging
+        res = _safe_insert(logs_collection, log_entry)
+        if res is None:
+            logger.warning("MongoDB insert returned None for alert log (falling back to file logs)")
 
         # File logs
         text_message = f"[{now.strftime('%Y-%m-%d %H:%M:%S')}] Detected at Camera {camera_id} ({camera_name}, Geo={geo}), distance={distance:.2f}"
         append_log_text(target, text_message)
-        append_log_json(target, log_entry_serialized)
+        append_log_json(target, json_serialize(log_entry))
+
+        # --- ADDITION: Emit audit log (non-fatal) ---
+        try:
+            from app.utils.logger import audit_event  # local import to avoid cycles
+            audit_payload = {
+                "camera_id": camera_id,
+                "camera_name": camera_name,
+                "geo": geo,
+                "target": target,
+                "distance": distance,
+                "timestamp": now.isoformat()
+            }
+            # Use audit_event (it redacts sensitive fields by default)
+            audit_event("detection", audit_payload, persist_to_db=False)
+        except Exception:
+            logger.exception("audit_event call in log_alert failed (ignored)")
 
         return True
-    except Exception as e:
-        print(f"[MongoDB] Failed to insert alert log: {e}")
+    except Exception:
+        logger.exception("Failed to insert alert log (returning False)")
         return False
 
+
 # -------------------------------
-# Log DeepFake Event
+# Log DeepFake Event (preserves original behavior)
 # -------------------------------
 def log_deepfake(camera_id: int, camera_name: str, geo: str, detection: dict, frame_id: int):
-    """Insert DeepFake detection event."""
-    now = datetime.now()
-
+    now = datetime.utcnow()
     log_entry = {
         "camera_id": camera_id,
         "camera_name": camera_name,
         "geo": geo,
         "frame_id": frame_id,
-        "is_fake": detection["is_fake"],
-        "confidence": detection["confidence"],
-        "bbox": detection["bbox"],
+        "is_fake": detection.get("is_fake"),
+        "confidence": detection.get("confidence"),
+        "bbox": detection.get("bbox"),
         "timestamp": now.isoformat()
     }
-
     try:
-        result = deepfake_collection.insert_one(log_entry)
-        log_entry_serialized = json_serialize(log_entry) # Serialize before file logging
-
+        res = _safe_insert(deepfake_collection, log_entry)
+        # Persist to deepfake file logs as well
         log_file = os.path.join(DEEPFAKE_LOGS_DIR, "deepfake_events.json")
-
         data = []
         if os.path.exists(log_file):
             try:
                 with open(log_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-            except json.JSONDecodeError:
-                print(f"[FileLog] Warning: Could not decode deepfake log file. Starting fresh.")
+            except Exception:
+                logger.warning("Could not decode deepfake log file - starting fresh")
                 data = []
-
-        data.append(log_entry_serialized)
-
-        with open(log_file, "w", encoding="utf-8") as f:
+        data.append(json_serialize(log_entry))
+        tmpf = log_file + ".tmp"
+        with open(tmpf, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
+        os.replace(tmpf, log_file)
+
+        # --- ADDITION: Emit audit log for deepfake event ---
+        try:
+            from app.utils.logger import audit_event  # local import to avoid cycles
+            audit_payload = {
+                "camera_id": camera_id,
+                "camera_name": camera_name,
+                "geo": geo,
+                "frame_id": frame_id,
+                "detection": {
+                    "is_fake": detection.get("is_fake"),
+                    "confidence": detection.get("confidence"),
+                    "bbox": detection.get("bbox")
+                },
+                "timestamp": now.isoformat()
+            }
+            audit_event("deepfake", audit_payload, persist_to_db=False)
+        except Exception:
+            logger.exception("audit_event call in log_deepfake failed (ignored)")
 
         return True
-    except Exception as e:
-        print(f"[MongoDB] Failed to insert deepfake log: {e}")
+    except Exception:
+        logger.exception("Failed to log deepfake event")
         return False
 
+
 # -------------------------------
-# Store/Retrieve Embeddings
+# Store / Retrieve Embeddings (preserve API)
 # -------------------------------
-def store_embedding(target: str, embedding: list):
-    """Store encrypted face embedding."""
+def store_embedding(target: str, embedding: List[float]) -> bool:
     try:
         encrypted = encrypt_embedding(embedding)
         faces_collection.update_one(
             {"target": target},
-            {"$set": {"embedding": encrypted, "updated_at": datetime.now().isoformat()}},
+            {"$set": {"embedding": encrypted, "updated_at": iso_now()}},
             upsert=True
         )
         return True
-    except Exception as e:
-        print(f"[DB] Failed to store embedding for {target}: {e}")
+    except Exception:
+        logger.exception("Failed to store embedding for %s", target)
         return False
 
-def retrieve_embedding(target: str) -> list:
-    """Retrieve decrypted embedding."""
+
+def retrieve_embedding(target: str) -> List[float]:
     try:
         doc = faces_collection.find_one({"target": target})
         if doc and "embedding" in doc:
             return decrypt_embedding(doc["embedding"])
         return []
-    except Exception as e:
-        print(f"[DB] Failed to retrieve embedding for {target}: {e}")
+    except Exception:
+        logger.exception("Failed to retrieve embedding for %s", target)
         return []
 
-# -------------------------------
-# NEW: Retrieve All Embeddings (for face_service persistence)
-# -------------------------------
 def retrieve_all_embeddings() -> List[Dict[str, Any]]:
-    """Retrieve all targets and their embeddings from the DB."""
     try:
-        cursor = faces_collection.find({}, {"_id": 0, "target": 1, "embedding": 1}) # Exclude _id
+        cursor = faces_collection.find({}, {"_id": 0, "target": 1, "embedding": 1})
         return list(cursor)
-    except Exception as e:
-        print(f"[DB] Failed to retrieve all embeddings: {e}")
+    except Exception:
+        logger.exception("Failed to retrieve all embeddings")
         return []
 
 # -------------------------------
-# NEW: Persistence for Alert Service (Watchlist & Geofences)
+# Watchlist & Geofence persistence (preserve API)
 # -------------------------------
 def save_watchlist_db(watchlist: List[str]):
-    """Save the entire watchlist to the config collection."""
     try:
         config_collection.update_one(
             {"name": "watchlist"},
-            {"$set": {"data": {"items": watchlist}, "updated_at": datetime.now().isoformat()}}, # Embed in 'data'
+            {"$set": {"data": {"items": watchlist}, "updated_at": iso_now()}},
             upsert=True
         )
-    except Exception as e:
-        print(f"[DB] Failed to save watchlist: {e}")
+    except Exception:
+        logger.exception("Failed to save watchlist")
 
 def load_watchlist_db() -> List[str]:
-    """Load the watchlist from the config collection."""
     try:
         doc = config_collection.find_one({"name": "watchlist"})
         return doc.get("data", {}).get("items", []) if doc else []
-    except Exception as e:
-        print(f"[DB] Failed to load watchlist: {e}")
+    except Exception:
+        logger.exception("Failed to load watchlist")
         return []
 
 def save_geofence_db(geofences: Dict[str, Any]):
-    """Save all geofence zones to the config collection."""
     try:
         config_collection.update_one(
             {"name": "geofences"},
-            {"$set": {"data": {"zones": geofences}, "updated_at": datetime.now().isoformat()}}, # Embed in 'data'
+            {"$set": {"data": {"zones": geofences}, "updated_at": iso_now()}},
             upsert=True
         )
-    except Exception as e:
-        print(f"[DB] Failed to save geofences: {e}")
+    except Exception:
+        logger.exception("Failed to save geofences")
 
 def load_geofences_db() -> Dict[str, Any]:
-    """Load all geofence zones from the config collection."""
     try:
         doc = config_collection.find_one({"name": "geofences"})
         return doc.get("data", {}).get("zones", {}) if doc else {}
-    except Exception as e:
-        print(f"[DB] Failed to load geofences: {e}")
+    except Exception:
+        logger.exception("Failed to load geofences")
         return {}
 
 # -------------------------------
-# NEW: Persistence for Tracking Service (Movement History)
+# Tracking persistence (preserve API)
 # -------------------------------
 def save_detection_to_db(detection: Dict[str, Any]):
-    """
-    Save a single detection event to the tracking collection.
-    This creates the persistent audit trail / movement log.
-    """
     try:
-        # Ensure geo is stored consistently (e.g., as list if tuple)
         if isinstance(detection.get("geo"), tuple):
             detection["geo"] = list(detection["geo"])
-        tracking_collection.insert_one(detection)
-    except Exception as e:
-        print(f"[DB] Failed to save tracking detection: {e}")
+        # augment timestamp if missing
+        if "timestamp" not in detection:
+            detection["timestamp"] = iso_now()
+        _safe_insert(tracking_collection, detection)
+    except Exception:
+        logger.exception("Failed to save tracking detection")
 
 def load_tracking_history_db(limit_per_person: int = 100) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Load the last N detection records for ALL persons from the DB.
-    Uses an aggregation pipeline for efficiency.
-    """
     try:
         pipeline = [
-            {
-                "$sort": {"timestamp": DESCENDING} # Get newest first
-            },
-            {
-                "$group": {
-                    "_id": "$person", # Group by person
-                    "history": {"$push": "$$ROOT"} # Push all records into an array
-                }
-            },
-            {
-                "$project": {
-                    "_id": 1, # Keep person name
-                    "history": {"$slice": ["$history", limit_per_person]} # Keep only the last N
-                }
-            }
+            {"$sort": {"timestamp": DESCENDING}},
+            {"$group": {"_id": "$person", "history": {"$push": "$$ROOT"}}},
+            {"$project": {"_id": 1, "history": {"$slice": ["$history", limit_per_person]}}}
         ]
-
         result_cursor = tracking_collection.aggregate(pipeline)
-
-        # Reformat the data for the service
         all_history = {}
         for doc in result_cursor:
             person = doc["_id"]
-            # Records are newest-to-oldest, so reverse them and serialize ObjectId
-            history_list = [json_serialize(item) for item in reversed(doc["history"])]
+            history_list = [json_serialize(item) for item in reversed(doc.get("history", []))]
             all_history[person] = history_list
-
         return all_history
-
-    except Exception as e:
-        print(f"[DB] Failed to load tracking history: {e}")
+    except Exception:
+        logger.exception("Failed to load tracking history")
         return {}
 
 def clear_history_in_db(person_name: Optional[str] = None):
-    """
-    Delete tracking records from the database.
-    If person_name is None, deletes ALL tracking history.
-    """
     try:
         if person_name:
-            print(f"[DB] Deleting tracking history for {person_name}...")
+            logger.info("Deleting tracking history for %s", person_name)
             result = tracking_collection.delete_many({"person": person_name})
-            print(f"[DB] Deleted {result.deleted_count} tracking records for {person_name}.")
+            logger.info("Deleted %d tracking records for %s", result.deleted_count, person_name)
         else:
-            print("[DB] Deleting ALL tracking history...")
+            logger.info("Deleting ALL tracking history")
             result = tracking_collection.delete_many({})
-            print(f"[DB] Deleted {result.deleted_count} total tracking records.")
-    except Exception as e:
-        print(f"[DB] Failed to clear tracking history: {e}")
-        # Re-raise the exception to be handled by the service layer
-        raise e
+            logger.info("Deleted %d total tracking records", result.deleted_count)
+    except Exception:
+        logger.exception("Failed to clear tracking history")
+        raise
+
+# -------------------------------
+# Graceful shutdown helper
+# -------------------------------
+def shutdown():
+    """Call at application shutdown to close DB client."""
+    try:
+        close_mongo_client()
+    except Exception:
+        logger.exception("Error during DB shutdown (ignored)")
+
+# -------------------------------
+# End of module
+# -------------------------------

@@ -1,34 +1,39 @@
-# backend/Dockerfile
+# backend/Dockerfile - improved and robust
 FROM python:3.11-slim
 
-# system deps (add more if your models need them)
+# Install system packages needed by opencv, dlib, ffmpeg and general builds
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    cmake \
+    git \
+    pkg-config \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
     ffmpeg \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# workdir
 WORKDIR /app/backend
 
-# copy only what we need for deps first to leverage layer cache
-COPY backend/requirements.pinned.txt /app/backend/requirements.pinned.txt
-# if you don't have requirements.pinned, the build may fail — fallback to requirements.txt in instructions
-RUN pip install --no-cache-dir -r /app/backend/requirements.pinned.txt
+# Copy requirements and install
+COPY backend/requirements.txt /app/backend/requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r /app/backend/requirements.txt
 
-# copy app code
+# Copy application
 COPY backend /app/backend
 
-# create uploads and data dir
-RUN mkdir -p /app/backend/data/uploads
+# Create required runtime directories
+RUN mkdir -p /app/backend/data/uploads /app/backend/data/fl_weights /app/backend/data/models
+
 VOLUME ["/app/backend/data"]
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Expose API port
 EXPOSE 8000
 
-# Default command: run uvicorn
+# Run using uvicorn; you can override CMD in production (e.g., use gunicorn+uvicorn workers)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

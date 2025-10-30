@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-// import axios from "axios"; // No longer needed, use api.js
+// frontend/src/App.jsx
+import React, { useState, useEffect, useRef } from "react";
 import {
   Camera,
   UploadCloud,
@@ -7,25 +7,27 @@ import {
   GitBranch,
   Radar,
   Server,
-  RefreshCw, // --- NEW: Icon for Aggregation
-  Download, // --- NEW: Icon for Download Model
+  RefreshCw,
+  Download,
 } from "lucide-react";
 
-// --- NEW: Import API functions and the socket instance ---
 import {
-  socket, // The Socket.IO client instance
+  socket,
   getCameraStatus,
   uploadFace,
   getCameraAlerts,
-  uploadFLWeights as apiUploadFLWeights, // Rename to avoid conflict
-  getFLWeights as apiGetFLWeights,       // Rename to avoid conflict
+  uploadFLWeights as apiUploadFLWeights,
+  getFLWeights as apiGetFLWeights,
   aggregateWeights,
   getAggregatedModel,
-} from "./api"; // Use the central API file
+} from "./api";
 
 function App() {
+  // File upload state
   const [file, setFile] = useState(null);
   const [uploadStatus, setUploadStatus] = useState("");
+
+  // Camera / alerts / tracking
   const [cameraStatus, setCameraStatus] = useState({});
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState({});
@@ -34,224 +36,223 @@ function App() {
   const [trackingCamera, setTrackingCamera] = useState(null);
   const [trackingTarget, setTrackingTarget] = useState(null);
   const [expanded, setExpanded] = useState({});
-  const [flWeights, setFlWeights] = useState({});
   const [brokenFeeds, setBrokenFeeds] = useState(new Set());
-  const [socketConnected, setSocketConnected] = useState(false); // --- NEW: Track socket status
+  const [socketConnected, setSocketConnected] = useState(false);
+  const feedRefreshTickerRef = useRef(0); // used to cache-bust image URLs
 
-  // --- NEW: State for FL ---
-  const [flClientId, setFlClientId] = useState("client_1"); // Default client
+  // FL (Federated Learning) state
+  const [flClientId, setFlClientId] = useState("client_1");
+  const [flWeights, setFlWeights] = useState({});
   const [aggregating, setAggregating] = useState(false);
   const [aggregatedModel, setAggregatedModel] = useState(null);
 
-  // const backendUrl = "http://127.0.0.1:8000"; // No longer needed directly
+  // Backend base (single source of truth, can be overridden by env var)
+  const BACKEND_BASE = process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
 
   // ------------------------
-  // Check camera status (Using api.js)
+  // Poll / refresh camera status
   // ------------------------
   useEffect(() => {
-    const checkCamera = async () => {
+    let mounted = true;
+
+    const fetchCameraStatus = async () => {
       try {
-        // const res = await axios.get(`${backendUrl}/camera/status`); // OLD
-        const res = await getCameraStatus(); // --- IMPROVED: Use api.js
-        setCameraStatus(res.data.status || {});
-      } catch (error) {
-        console.error("Camera status error:", error);
+        const res = await getCameraStatus();
+        if (!mounted) return;
+        // API may return different structures; handle safely
+        const statusObj = res?.data?.status ?? res?.data ?? {};
+        setCameraStatus(statusObj);
+      } catch (err) {
+        console.error("Camera status error:", err);
         setCameraStatus({ error: "❌ Camera API not reachable" });
       }
     };
 
-    checkCamera();
-    const interval = setInterval(checkCamera, 5000);
-    return () => clearInterval(interval);
+    fetchCameraStatus();
+    const interval = setInterval(fetchCameraStatus, 5000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // ------------------------
-  // Upload & Encode Target Photo (Using api.js)
+  // Upload & Encode Target Photo
   // ------------------------
   const handleUpload = async () => {
     if (!file) return;
     setUploadStatus("Uploading...");
     const formData = new FormData();
     formData.append("file", file);
-    // Use filename as default target name if not provided elsewhere
     formData.append("target_name", file.name);
-    formData.append("save_raw", false); // Or add state for this
+    formData.append("save_raw", false);
 
     try {
-      // const res = await axios.post(`${backendUrl}/face/upload`, formData, { // OLD
-      //   headers: { "Content-Type": "multipart/form-data" },
-      // });
-      const res = await uploadFace(formData); // --- IMPROVED: Use api.js
-
-      if (res.data.status === "success") {
-        setUploadStatus(
-          `✅ ${res.data.message || `Uploaded ${res.data.filename}`}`
-        );
-        // --- NEW: Clear file input on success ---
+      const res = await uploadFace(formData);
+      const data = res?.data ?? {};
+      if (data.status === "success") {
+        setUploadStatus(`✅ ${data.message || `Uploaded ${data.filename}`}`);
         setFile(null);
-        if (document.getElementById("upload-input")) {
-            document.getElementById("upload-input").value = null;
-        }
+        const el = document.getElementById("upload-input");
+        if (el) el.value = null;
       } else {
-        setUploadStatus(`❌ ${res.data.message || "Upload failed"}`);
+        setUploadStatus(`❌ ${data.message || "Upload failed"}`);
       }
     } catch (err) {
-      console.error(err);
-      setUploadStatus(
-        `❌ ${err.response?.data?.detail || err.response?.data?.message || "Error uploading file"}`
-      );
+      console.error("Upload error:", err);
+      const message =
+        err?.response?.data?.detail ||
+        err?.response?.data?.message ||
+        err?.message ||
+        "Error uploading file";
+      setUploadStatus(`❌ ${message}`);
     }
   };
 
-  // ------------------------------------
-  // --- REAL-TIME VIA WEBSOCKETS ---
-  // ------------------------------------
+  // ------------------------
+  // WebSocket + initial data fetch
+  // ------------------------
   useEffect(() => {
-    // --- 1. Load initial data via REST API ---
-    const fetchInitialData = async () => {
-      console.log("Fetching initial data...");
-      try {
-        const res = await getCameraAlerts(); // Use api.js
-        if (res.data.status === "success") {
-          setAlerts(res.data.alerts || []);
-          setHistory(res.data.history || {});
-          setMovementLog(res.data.movement_log || []);
+    let mounted = true;
 
-          if (res.data.latest_detection) {
-            setTrackingCamera(res.data.latest_detection.camera_id);
-            setTrackingTarget(res.data.latest_detection.target);
+    const fetchInitialData = async () => {
+      try {
+        const res = await getCameraAlerts();
+        if (!mounted) return;
+        const data = res?.data ?? {};
+        if (data.status === "success") {
+          setAlerts(data.alerts ?? []);
+          setHistory(data.history ?? {});
+          setMovementLog(data.movement_log ?? []);
+          if (data.latest_detection) {
+            setTrackingCamera(data.latest_detection.camera_id);
+            setTrackingTarget(data.latest_detection.target);
           }
-           console.log("Initial data loaded.");
+        } else {
+          // Accept non-success but still try to fill partial fields
+          setAlerts(data.alerts ?? []);
+          setHistory(data.history ?? {});
+          setMovementLog(data.movement_log ?? {});
         }
       } catch (err) {
         console.error("Error fetching initial alerts:", err);
       }
     };
 
-    fetchInitialData();
-
-    // --- 2. Setup Socket.IO listeners ---
-    console.log("Setting up Socket.IO listeners...");
-
-    const handleConnect = () => {
-        console.log("Socket.IO Connected:", socket.id);
-        setSocketConnected(true);
-        // Fetch initial data again on reconnect in case something was missed
-        fetchInitialData();
+    const onConnect = () => {
+      console.log("Socket connected:", socket.id);
+      setSocketConnected(true);
+      // Refresh data on reconnect
+      fetchInitialData();
+      // Also refresh camera status
+      getCameraStatus()
+        .then((r) => {
+          const statusObj = r?.data?.status ?? r?.data ?? {};
+          setCameraStatus(statusObj);
+        })
+        .catch((e) => console.warn("Failed to refresh camera status on reconnect", e));
     };
 
-    const handleDisconnect = (reason) => {
-        console.log("Socket.IO Disconnected:", reason);
-        setSocketConnected(false);
+    const onDisconnect = (reason) => {
+      console.log("Socket disconnected:", reason);
+      setSocketConnected(false);
     };
 
-    const handleNewAlert = ({ alert }) => {
-        console.log("Received new_alert:", alert);
-        setAlerts((prevAlerts) => [alert, ...prevAlerts.slice(0, 49)]); // Add to top, limit to 50
-        // Update history for the specific target
-        setHistory(prevHistory => ({
-            ...prevHistory,
-            [alert.target]: [alert, ...(prevHistory[alert.target] || [])].slice(0, 10) // Add to history, limit
-        }));
+    const onNewAlert = (payload) => {
+      const alert = payload?.alert ?? payload;
+      if (!alert) return;
+      setAlerts((prev) => [alert, ...prev].slice(0, 50));
+      setHistory((prevHistory) => ({
+        ...prevHistory,
+        [alert.target]: [alert, ...(prevHistory[alert.target] || [])].slice(0, 10),
+      }));
     };
 
-    const handleUpdateMovementLog = ({ log }) => {
-        console.log("Received update_movement_log:", log);
-        setMovementLog((prevLog) => [log, ...prevLog.slice(0, 99)]); // Add to top, limit
+    const onUpdateMovementLog = (payload) => {
+      const log = payload?.log ?? payload;
+      if (!log) return;
+      setMovementLog((prev) => [log, ...prev].slice(0, 100));
     };
 
-    const handleUpdateTrackingFeed = ({ detection }) => {
-        console.log("Received update_tracking_feed:", detection);
-        if (detection) {
-            setTrackingCamera(detection.camera_id);
-            setTrackingTarget(detection.person);
-        }
+    const onUpdateTrackingFeed = (payload) => {
+      const detection = payload?.detection ?? payload;
+      if (!detection) return;
+      setTrackingCamera(detection.camera_id);
+      setTrackingTarget(detection.person || detection.target);
     };
 
     // Attach listeners
-    socket.on("connect", handleConnect);
-    socket.on("disconnect", handleDisconnect);
-    socket.on("new_alert", handleNewAlert);
-    socket.on("update_movement_log", handleUpdateMovementLog);
-    socket.on("update_tracking_feed", handleUpdateTrackingFeed);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("new_alert", onNewAlert);
+    socket.on("update_movement_log", onUpdateMovementLog);
+    socket.on("update_tracking_feed", onUpdateTrackingFeed);
 
-    // Initial connection state
-    setSocketConnected(socket.connected);
+    // set initial connection state & fetch initial data once
+    setSocketConnected(!!socket.connected);
+    fetchInitialData();
 
-    // --- 3. Cleanup listeners on component unmount ---
     return () => {
-      console.log("Cleaning up Socket.IO listeners...");
-      socket.off("connect", handleConnect);
-      socket.off("disconnect", handleDisconnect);
-      socket.off("new_alert", handleNewAlert);
-      socket.off("update_movement_log", handleUpdateMovementLog);
-      socket.off("update_tracking_feed", handleUpdateTrackingFeed);
+      mounted = false;
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("new_alert", onNewAlert);
+      socket.off("update_movement_log", onUpdateMovementLog);
+      socket.off("update_tracking_feed", onUpdateTrackingFeed);
     };
-  }, []); // Run only once on mount
-
-
-  // -----------------------------------------
-  // --- POLLING LOGIC (NOW COMMENTED OUT) ---
-  // -----------------------------------------
-  // useEffect(() => {
-  //   const fetchAlerts = async () => {
-  //     try {
-  //       const res = await axios.get(`${backendUrl}/camera/alerts`);
-  //       if (res.data.status === "success") {
-  //         setAlerts(res.data.alerts || []);
-  //         setHistory(res.data.history || {});
-  //         setMovementLog(res.data.movement_log || []);
-
-  //         if (res.data.latest_detection) {
-  //           setTrackingCamera(res.data.latest_detection.camera_id);
-  //           setTrackingTarget(res.data.latest_detection.target);
-  //         }
-  //       }
-  //     } catch (err) {
-  //       console.error("Error fetching alerts:", err);
-  //     }
-  //   };
-
-  //   fetchAlerts();
-  //   const interval = setInterval(fetchAlerts, 3000);
-  //   return () => clearInterval(interval);
-  // }, []);
-
+  }, []);
 
   // ------------------------
-  // Random 4 camera feeds
+  // Random 4 camera feeds selector (recomputed when cameraStatus changes)
   // ------------------------
   useEffect(() => {
     const updateRandomCameras = () => {
-      const availableCams = Object.keys(cameraStatus || {}).filter(
-        (id) => cameraStatus[id]?.state === "ok" && !isNaN(parseInt(id)) // Ensure it's a number ID
-      );
+      const available = Object.keys(cameraStatus || {})
+        .filter((id) => {
+          const entry = cameraStatus[id];
+          // Support both shapes: entry.state or entry.status
+          const state = entry?.state ?? entry?.status ?? null;
+          return state === "ok" || state === "online" || state === "available";
+        })
+        .map((id) => parseInt(id))
+        .filter((n) => !Number.isNaN(n));
 
-      if (availableCams.length === 0) return;
+      if (available.length === 0) {
+        // Keep previously selected or early fallback to 0
+        return;
+      }
 
-      const shuffled = [...availableCams].sort(() => 0.5 - Math.random());
-      const selected = shuffled.slice(0, 4).map((id) => parseInt(id));
-      // Ensure we always have 4, even if fewer cameras are available
-      while (selected.length < 4 && availableCams.length > 0) {
-          selected.push(parseInt(availableCams[0]));
+      const shuffled = [...available].sort(() => 0.5 - Math.random());
+      const selected = shuffled.slice(0, 4);
+
+      while (selected.length < 4 && available.length > 0) {
+        selected.push(available[0]);
       }
-      // Handle edge case where no cameras are available initially but become available later
-      if (selected.length > 0) {
-        setRandomCameras(selected);
-      }
+
+      setRandomCameras(selected);
     };
 
-    // Update immediately and then set interval
     updateRandomCameras();
-    const interval = setInterval(updateRandomCameras, 10000); // Check every 10 seconds
-    return () => clearInterval(interval);
-  }, [cameraStatus]); // Re-run when cameraStatus changes
+  }, [cameraStatus]);
 
   // ------------------------
-  // Get confidence badge
+  // Feed cache-busting ticker (updates every 5s to refresh MJPEG <img> src param)
+  // ------------------------
+  useEffect(() => {
+    const t = setInterval(() => {
+      feedRefreshTickerRef.current = Date.now();
+      // trigger a re-render (small trick: update a state)
+      // but avoid extra state, we can call setBrokenFeeds to itself to trigger render if needed:
+      setBrokenFeeds((s) => new Set(s)); // safe no-op state update to refresh img srcs
+    }, 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ------------------------
+  // Badge helper
   // ------------------------
   const getBadge = (distance) => {
-    if (distance === undefined || distance === null) return null; // Handle missing distance
+    if (distance === undefined || distance === null) return null;
     if (distance < 0.4)
       return (
         <span className="ml-2 px-2.5 py-0.5 bg-red-500/20 text-red-400 rounded-full text-xs font-semibold">
@@ -272,48 +273,39 @@ function App() {
   };
 
   // ------------------------
-  // Federated Learning: Upload local weights (Using api.js)
+  // Federated Learning helpers
   // ------------------------
   const uploadFLWeights = async () => {
     try {
-      const target = flClientId; // Use state variable
-      // Dummy weights for demo
-      const weights = { layer1: [Math.random(), Math.random()], layer2: [Math.random(), Math.random()] };
-
-      // const res = await axios.post( // OLD
-      //   `${backendUrl}/face/fl/upload_weights`,
-      //   { target: target, weights: weights },
-      //   { headers: { "Content-Type": "application/json" } }
-      // );
-      const res = await apiUploadFLWeights(target, weights); // --- IMPROVED: Use api.js
-
-      if (res.data.status === "success") {
+      const target = flClientId;
+      const weights = {
+        layer1: [Math.random(), Math.random()],
+        layer2: [Math.random(), Math.random()],
+      };
+      const res = await apiUploadFLWeights(target, weights);
+      const data = res?.data ?? {};
+      if (data.status === "success") {
         alert("✅ Federated weights uploaded successfully!");
-        fetchFLWeights(); // Refresh display
+        await fetchFLWeights();
       } else {
-        alert(`❌ Failed to upload FL weights: ${res.data.message}`);
+        alert(`❌ Failed to upload FL weights: ${data.message || "unknown"}`);
       }
     } catch (err) {
       console.error("Error uploading FL weights:", err);
-      alert(`❌ Failed to upload FL weights: ${err.response?.data?.detail || err.message}`);
+      const message = err?.response?.data?.detail || err?.message || "Upload failed";
+      alert(`❌ Failed to upload FL weights: ${message}`);
     }
   };
 
-  // ------------------------
-  // Federated Learning: Fetch current weights (Using api.js)
-  // ------------------------
   const fetchFLWeights = async () => {
     try {
-      const target = flClientId; // Use state variable
-      // const res = await axios.get(`${backendUrl}/face/fl/get_weights`, { // OLD
-      //   params: { target },
-      // });
-      const res = await apiGetFLWeights(target); // --- IMPROVED: Use api.js
-      if (res.data.status === "success") {
-        setFlWeights(res.data.weights || {});
+      const res = await apiGetFLWeights(flClientId);
+      const data = res?.data ?? {};
+      if (data.status === "success") {
+        setFlWeights(data.weights ?? {});
       } else {
         setFlWeights({});
-        console.warn(`Could not fetch weights for ${target}: ${res.data.message}`);
+        console.warn(`Could not fetch weights for ${flClientId}: ${data.message}`);
       }
     } catch (err) {
       console.error("Error fetching FL weights:", err);
@@ -321,72 +313,79 @@ function App() {
     }
   };
 
-  // Removed the polling useEffect for FL weights, fetch manually or on upload
-
-  // --- NEW: FL Aggregation ---
   const handleAggregate = async () => {
     setAggregating(true);
     setAggregatedModel(null);
     try {
-      // Example: Aggregate all known clients or specify some
-      const res = await aggregateWeights(null, Date.now()); // Use timestamp as version
-      if (res.data.status === "success") {
-        alert(`✅ Aggregation successful! New model version: ${res.data.new_model_version}`);
-        // Optionally fetch the new model details
-        handleGetAggregatedModel();
+      const res = await aggregateWeights(null, Date.now());
+      const data = res?.data ?? {};
+      if (data.status === "success") {
+        alert(`✅ Aggregation successful! New model version: ${data.new_model_version}`);
+        await handleGetAggregatedModel();
       } else {
-        alert(`❌ Aggregation failed: ${res.data.message}`);
+        alert(`❌ Aggregation failed: ${data.message || "unknown"}`);
       }
     } catch (err) {
       console.error("Error aggregating weights:", err);
-      alert(`❌ Aggregation failed: ${err.response?.data?.detail || err.message}`);
+      const message = err?.response?.data?.detail || err?.message || "Aggregation failed";
+      alert(`❌ Aggregation failed: ${message}`);
+    } finally {
+      setAggregating(false);
     }
-    setAggregating(false);
   };
 
-  // --- NEW: FL Get Aggregated Model ---
-   const handleGetAggregatedModel = async () => {
+  const handleGetAggregatedModel = async () => {
     try {
-        const res = await getAggregatedModel();
-        if (res.data.status === 'success') {
-            setAggregatedModel(res.data);
-        } else {
-            alert(`❌ Failed to get aggregated model: ${res.data.message}`);
-            setAggregatedModel(null);
-        }
-    } catch (err) {
-        console.error("Error getting aggregated model:", err);
-        alert(`❌ Failed to get aggregated model: ${err.response?.data?.detail || err.message}`);
+      const res = await getAggregatedModel();
+      const data = res?.data ?? {};
+      if (data.status === "success") {
+        setAggregatedModel(data);
+      } else {
+        alert(`❌ Failed to get aggregated model: ${data.message || "unknown"}`);
         setAggregatedModel(null);
+      }
+    } catch (err) {
+      console.error("Error getting aggregated model:", err);
+      const message = err?.response?.data?.detail || err?.message || "Failed to get aggregated model";
+      alert(`❌ Failed to get aggregated model: ${message}`);
+      setAggregatedModel(null);
     }
   };
-
 
   // ------------------------
-  // Handle camera feed errors
+  // Camera feed error handler (fix Set update usage)
   // ------------------------
   const handleFeedError = (camId) => {
-    // Only add if not already broken to prevent excessive state updates
-    if (!brokenFeeds.has(camId)) {
+    setBrokenFeeds((prev) => {
+      const copy = new Set(prev);
+      if (!copy.has(camId)) {
         console.warn(`Camera feed error for Cam ID: ${camId}`);
-        setBrokenFeeds((prev) => new Set(prev).add(camId));
-    }
+        copy.add(camId);
+      }
+      return copy;
+    });
   };
 
-  // --- NEW: Attempt to reconnect broken feeds periodically ---
+  // Periodically attempt simple "reconnect" by clearing brokenFeeds so <img> tags reload
   useEffect(() => {
     const retryInterval = setInterval(() => {
-        if (brokenFeeds.size > 0) {
-            console.log("Attempting to reconnect broken camera feeds...");
-            // Simply remove from broken set, the img tag's src will cause a reload attempt
-            setBrokenFeeds(new Set());
-        }
-    }, 15000); // Retry every 15 seconds
-
+      setBrokenFeeds((prev) => {
+        if (prev.size === 0) return prev;
+        return new Set(); // clear and cause re-render / reload of feed images
+      });
+    }, 15000);
     return () => clearInterval(retryInterval);
-  }, [brokenFeeds]);
+  }, []);
 
+  // Helper to build feed URL (centralized)
+  const buildFeedUrl = (cameraId) => {
+    const timestamp = feedRefreshTickerRef.current || Date.now();
+    return `${BACKEND_BASE}/camera/${cameraId}/feed?_=${timestamp}`;
+  };
 
+  // ------------------------
+  // Render
+  // ------------------------
   return (
     <div className="bg-gray-900 text-gray-200 min-h-screen font-sans">
       <div className="max-w-screen-xl mx-auto p-4 sm:p-6 lg:p-8">
@@ -395,10 +394,9 @@ function App() {
           <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-teal-500">
             Multi-Camera Face Recognition Platform
           </h1>
-          {/* --- IMPROVED: Show Socket.IO status --- */}
           <p className="text-gray-400 mt-2 flex items-center text-sm">
             <Server className="w-4 h-4 mr-2 text-cyan-500" />
-            Backend: {`http://127.0.0.1:8000`} | WebSocket:{" "}
+            Backend: {BACKEND_BASE} | WebSocket:{" "}
             <span
               className={`ml-1 font-semibold ${
                 socketConnected ? "text-green-400" : "text-red-400"
@@ -419,22 +417,20 @@ function App() {
                 <Radar className="w-6 h-6 mr-3 text-cyan-400" />
                 Live Tracking Feed
               </h2>
-              {trackingCamera !== null && trackingTarget !== null ? ( // Ensure target is also set
+              {trackingCamera !== null && trackingTarget !== null ? (
                 <div className="bg-black/20 rounded-lg overflow-hidden">
                   <div className="p-3 bg-gray-700/50 border-b border-gray-600">
                     <p className="text-sm">
                       Tracking{" "}
                       <b className="text-cyan-400">{trackingTarget}</b> at{" "}
                       <b className="text-cyan-400">
-                        {cameraStatus[trackingCamera]?.name ||
-                          `Camera ${trackingCamera}`}
+                        {cameraStatus?.[trackingCamera]?.name || `Camera ${trackingCamera}`}
                       </b>
                     </p>
                   </div>
                   {!brokenFeeds.has(trackingCamera) ? (
                     <img
-                      // --- NEW: Add cache-busting query param ---
-                      src={`http://127.0.0.1:8000/camera/${trackingCamera}/feed?_=${Date.now()}`}
+                      src={buildFeedUrl(trackingCamera)}
                       alt={`Tracking Camera ${trackingCamera}`}
                       className="w-full h-auto object-cover"
                       onError={() => handleFeedError(trackingCamera)}
@@ -461,17 +457,15 @@ function App() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {randomCameras.map((camId, idx) => (
                   <div
-                    // Use a more stable key if possible, but index is okay here
                     key={`${camId}-${idx}`}
                     className="bg-black/20 border-2 border-gray-700 rounded-lg overflow-hidden shadow-lg"
                   >
                     <p className="font-medium text-sm p-2 bg-gray-700/50">
-                      {cameraStatus[camId]?.name || `Camera ${camId}`}
+                      {cameraStatus?.[camId]?.name || `Camera ${camId}`}
                     </p>
                     {!brokenFeeds.has(camId) ? (
                       <img
-                        // --- NEW: Add cache-busting query param ---
-                        src={`http://127.0.0.1:8000/camera/${camId}/feed?_=${Date.now()}`}
+                        src={buildFeedUrl(camId)}
                         alt={`Camera ${camId}`}
                         className="w-full h-auto"
                         onError={() => handleFeedError(camId)}
@@ -497,11 +491,11 @@ function App() {
               </h2>
               <div className="space-y-4">
                 <input
-                  id="upload-input" // --- NEW: Added ID ---
+                  id="upload-input"
                   type="file"
                   accept="image/*"
                   className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-cyan-500/10 file:text-cyan-300 hover:file:bg-cyan-500/20 cursor-pointer"
-                  onChange={(e) => setFile(e.target.files[0])}
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 />
                 <button
                   className="w-full px-4 py-2 bg-cyan-600 text-white font-bold rounded-lg hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed transition duration-300 ease-in-out"
@@ -524,7 +518,7 @@ function App() {
                 <GitBranch className="w-5 h-5 mr-3 text-cyan-400" />
                 Federated Learning
               </h2>
-              {/* --- NEW: Input for Client ID --- */}
+
               <input
                 type="text"
                 value={flClientId}
@@ -532,6 +526,7 @@ function App() {
                 placeholder="Enter Client ID"
                 className="w-full px-3 py-2 mb-3 bg-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
               />
+
               <div className="space-y-3">
                 <button
                   className="w-full px-4 py-2 bg-teal-600 text-white font-bold rounded-lg hover:bg-teal-700 transition duration-300 disabled:opacity-50"
@@ -540,41 +535,43 @@ function App() {
                 >
                   Upload Local Weights (Demo)
                 </button>
-                {/* --- NEW: FL Aggregation Buttons --- */}
-                 <button
+
+                <button
                   className="w-full px-4 py-2 bg-purple-600 text-white font-bold rounded-lg hover:bg-purple-700 transition duration-300 disabled:opacity-50 flex items-center justify-center"
                   onClick={handleAggregate}
                   disabled={aggregating}
                 >
-                  <RefreshCw className={`w-4 h-4 mr-2 ${aggregating ? 'animate-spin' : ''}`} />
+                  <RefreshCw className={`w-4 h-4 mr-2 ${aggregating ? "animate-spin" : ""}`} />
                   {aggregating ? "Aggregating..." : "Aggregate Weights"}
                 </button>
-                 <button
+
+                <button
                   className="w-full px-4 py-2 bg-gray-600 text-white font-bold rounded-lg hover:bg-gray-700 transition duration-300 flex items-center justify-center"
                   onClick={handleGetAggregatedModel}
                 >
-                    <Download className="w-4 h-4 mr-2"/>
+                  <Download className="w-4 h-4 mr-2" />
                   View Aggregated Model
                 </button>
 
                 <div className="mt-4">
                   <h3 className="text-sm text-gray-400 font-semibold mb-2">
                     Weights for '{flClientId}':
-                     {/* --- NEW: Button to manually fetch --- */}
-                     <button onClick={fetchFLWeights} className="ml-2 text-xs text-cyan-400 hover:underline">(Refresh)</button>
+                    <button onClick={fetchFLWeights} className="ml-2 text-xs text-cyan-400 hover:underline">
+                      (Refresh)
+                    </button>
                   </h3>
                   <pre className="bg-gray-700 p-3 rounded-lg text-xs max-h-40 overflow-y-auto">
                     {JSON.stringify(flWeights, null, 2)}
                   </pre>
-                  {/* --- NEW: Display aggregated model --- */}
+
                   {aggregatedModel && (
                     <>
-                    <h3 className="text-sm text-gray-400 font-semibold mt-4 mb-2">
+                      <h3 className="text-sm text-gray-400 font-semibold mt-4 mb-2">
                         Latest Aggregated Model (v{aggregatedModel.model_version}):
-                    </h3>
-                    <pre className="bg-gray-700 p-3 rounded-lg text-xs max-h-40 overflow-y-auto">
+                      </h3>
+                      <pre className="bg-gray-700 p-3 rounded-lg text-xs max-h-40 overflow-y-auto">
                         {JSON.stringify(aggregatedModel, null, 2)}
-                    </pre>
+                      </pre>
                     </>
                   )}
                 </div>
@@ -587,61 +584,49 @@ function App() {
                 <Bell className="w-5 h-5 mr-3 text-cyan-400" />
                 Alerts
               </h2>
+
               {alerts.length === 0 ? (
                 <p className="text-gray-500 text-sm">No matches detected yet.</p>
               ) : (
-                <ul className="space-y-3 max-h-96 overflow-y-auto pr-2"> {/* Added padding for scrollbar */}
-                  {alerts.map((a, idx) => (
-                    <li
-                      // Use a more stable key like alert_id if available
-                      key={a.alert_id || idx}
-                      className="p-3 bg-gray-700/50 rounded-lg shadow-sm"
-                    >
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm">
-                          <b className="text-cyan-400">{a.target}</b> detected at{" "}
-                          <span className="italic">
-                            {a.camera_name || `Cam ${a.camera_id}`}
+                <ul className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                  {alerts.map((a, idx) => {
+                    const key = a.alert_id || `${a.target}-${a.camera_id}-${idx}`;
+                    const expandedKey = a.alert_id || a.target;
+                    return (
+                      <li key={key} className="p-3 bg-gray-700/50 rounded-lg shadow-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm">
+                            <b className="text-cyan-400">{a.target}</b> detected at{" "}
+                            <span className="italic">{a.camera_name || `Cam ${a.camera_id}`}</span>
+                            {getBadge(a.distance)}
                           </span>
-                          {getBadge(a.distance)}
-                        </span>
-                        <button
-                          className="text-xs text-cyan-400 hover:underline"
-                          onClick={() =>
-                            setExpanded((prev) => ({
-                              ...prev,
-                              // Use alert_id for stable key
-                              [a.alert_id || a.target]: !prev[a.alert_id || a.target],
-                            }))
-                          }
-                        >
-                          {/* Use alert_id for stable key */}
-                          {expanded[a.alert_id || a.target] ? "Hide" : "History"}
-                        </button>
-                      </div>
-                      {/* Use alert_id for stable key */}
-                      {expanded[a.alert_id || a.target] && (
-                        <ul className="mt-3 pl-5 text-xs text-gray-400 list-disc space-y-1">
-                          {/* Ensure history[a.target] is an array */}
-                          {(Array.isArray(history[a.target]) ? history[a.target] : []).map((h, hIdx) => (
-                            <li key={h.alert_id || hIdx}> {/* Use stable key if available */}
-                              <span className="font-mono">
-                                [{new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}] {/* Format time */}
-                              </span>{" "}
-                              at{" "}
-                              <span className="font-semibold">
-                                {h.camera_name || `Cam ${h.camera_id}`}
-                              </span>{" "}
-                              - Dist:{" "}
-                              <span className="text-cyan-300">
-                                {h.distance?.toFixed(2)}
-                              </span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  ))}
+
+                          <button
+                            className="text-xs text-cyan-400 hover:underline"
+                            onClick={() =>
+                              setExpanded((prev) => ({ ...prev, [expandedKey]: !prev[expandedKey] }))
+                            }
+                          >
+                            {expanded[expandedKey] ? "Hide" : "History"}
+                          </button>
+                        </div>
+
+                        {expanded[expandedKey] && (
+                          <ul className="mt-3 pl-5 text-xs text-gray-400 list-disc space-y-1">
+                            {(Array.isArray(history?.[a.target]) ? history[a.target] : []).map((h, hIdx) => (
+                              <li key={h.alert_id || `${a.target}-${hIdx}`}>
+                                <span className="font-mono">
+                                  [{new Date(h.timestamp).toLocaleTimeString()}]
+                                </span>{" "}
+                                at <span className="font-semibold">{h.camera_name || `Cam ${h.camera_id}`}</span>{" "}
+                                - Dist: <span className="text-cyan-300">{h.distance?.toFixed(2)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
@@ -653,23 +638,16 @@ function App() {
                 Movement Log
               </h2>
               {movementLog.length === 0 ? (
-                <p className="text-gray-500 text-sm">
-                  No movement detected yet.
-                </p>
+                <p className="text-gray-500 text-sm">No movement detected yet.</p>
               ) : (
-                <ul className="list-inside space-y-2 text-sm max-h-60 overflow-y-auto pr-2"> {/* Added padding */}
+                <ul className="list-inside space-y-2 text-sm max-h-60 overflow-y-auto pr-2">
                   {movementLog.map((log, idx) => (
-                     // Use timestamp + target as a potentially more unique key
                     <li key={`${log.timestamp}-${log.target}-${idx}`} className="text-gray-400">
                       <span className="font-mono text-cyan-400/70 mr-2">
-                        {/* Format time */}
-                        [{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
+                        [{new Date(log.timestamp).toLocaleTimeString()}]
                       </span>
                       <b className="text-gray-200">{log.target}</b> moved through{" "}
-                      <span className="font-semibold">
-                        {log.camera_name || `Cam ${log.camera_id}`}
-                      </span>
-                      .
+                      <span className="font-semibold">{log.camera_name || `Cam ${log.camera_id}`}</span>.
                     </li>
                   ))}
                 </ul>

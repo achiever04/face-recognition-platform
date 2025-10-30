@@ -1,22 +1,31 @@
 /* frontend/src/index.css */
 
-/* --- FIX: Added missing base and components directives --- */
 /* Inject Tailwind's base styles, component classes, and utility classes. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Add any custom global styles or base layer customizations here */
-body {
-  /* This @apply rule should now work correctly */
-  @apply bg-gray-900 text-gray-200 font-sans; /* Example global style */
-  /* Ensures background color is applied even outside the main App div */
-  min-height: 100vh;
+/* Custom global styles */
+:root {
+  --bg: #0f1720; /* slightly darker than gray-900 if needed */
 }
 
-/* Custom scrollbar styling (optional, works in WebKit browsers like Chrome/Safari) */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-gray-900 text-gray-200 font-sans;
+  min-height: 100vh;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar styling (WebKit browsers) */
 ::-webkit-scrollbar {
-  width: 8px; /* Width of the scrollbar */
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -31,4 +40,9 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #718096; /* bg-gray-500 */
+}
+
+/* Small utilities used across the app (optional but helpful) */
+.img-cover {
+  object-fit: cover;
 }

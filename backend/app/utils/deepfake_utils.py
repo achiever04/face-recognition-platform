@@ -1,66 +1,110 @@
 """
 DeepFake detection and face detection utilities.
-Uses RetinaFace (from insightface) for fast & accurate face detection
-and MobileNetV3 for DeepFake classification.
+
+- Uses InsightFace/RetinaFace for face detection when available.
+- Uses a MobileNetV3-based classifier (2-class) for deepfake prediction when trained weights are present.
+- Falls back to OpenCV Haar cascade for face detection and default behavior when models are unavailable.
+
+Class: DeepfakeDetector
+Methods:
+    - detect_and_classify(frame) -> List[dict]
+    - _classify_face(crop) -> (is_fake: bool, confidence: float)
+    - _fallback_detection(frame) -> List[dict]
+    - log_deepfake_event(camera_id, frame_id, detection) -> None (legacy)
 """
 
 import os
+import logging
+from pathlib import Path
+from typing import List, Dict, Tuple, Any, Optional
+
 import cv2
-import torch
 import numpy as np
+import torch
 from torchvision import transforms
 from torchvision.models import mobilenet_v3_small
 
+logger = logging.getLogger(__name__)
+
+
 class DeepfakeDetector:
-    def __init__(self, device=None):
+    def __init__(self, device: Optional[torch.device] = None):
         # Device setup
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"[DeepfakeDetector] Initializing with device: {self.device}")
-        
-        # Initialize RetinaFace (InsightFace)
+        self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+        logger.info("Initializing DeepfakeDetector on device: %s", self.device)
+
+        # Try to initialize InsightFace RetinaFace (optional)
         self.face_app = None
         try:
-            from insightface.app import FaceAnalysis
+            from insightface.app import FaceAnalysis  # type: ignore
+            # Attempt to prepare with CPU provider first; if GPU desired, the user can adjust instantiation externally
             self.face_app = FaceAnalysis(providers=['CPUExecutionProvider'])
-            self.face_app.prepare(ctx_id=0, det_size=(640, 640))
-            print("[DeepfakeDetector] InsightFace (RetinaFace) loaded successfully.")
+            # prepare may require ctx_id; for CPU we use -1 or default behavior
+            try:
+                self.face_app.prepare(ctx_id=0, det_size=(640, 640))
+            except Exception:
+                # Fall back to default prepare invocation if ctx_id fails
+                self.face_app.prepare(det_size=(640, 640))
+            logger.info("InsightFace FaceAnalysis (RetinaFace) loaded successfully.")
         except Exception as e:
-            print(f"[DeepfakeDetector] Warning: Could not initialize RetinaFace: {e}")
-            print("[DeepfakeDetector] Falling back to basic OpenCV detection")
-        
-        # Initialize DeepFake Detection Model
+            logger.warning("InsightFace/RetinaFace initialization failed: %s. Falling back to OpenCV detection.", e)
+            self.face_app = None
+
+        # Initialize deepfake classification model
+        self.model: Optional[torch.nn.Module] = None
         try:
-            self.model = mobilenet_v3_small(pretrained=True) # Start with ImageNet weights
-            # Modify the final layer for 2 classes (real, fake)
-            self.model.classifier[3] = torch.nn.Linear(in_features=1024, out_features=2)
-            
-            # --- IMPROVEMENT: Robust model weight loading ---
-            self.model_path = "models/deepfake_mobilenet.pth"
-            
-            if os.path.exists(self.model_path):
-                print(f"[DeepfakeDetector] Found model weights at {self.model_path}. Loading...")
-                # Load the trained weights onto the correct device
-                self.model.load_state_dict(
-                    torch.load(self.model_path, map_location=self.device)
-                )
-                print("[DeepfakeDetector] Deepfake model weights loaded successfully.")
-            else:
-                # The original TODO is now a functional, non-blocking warning
-                print("="*50)
-                print(f"[DeepfakeDetector] WARNING: Model weights file not found!")
-                print(f"  Expected at: {os.path.abspath(self.model_path)}")
-                print("[DeepfakeDetector] The model will give RANDOM (untrained) predictions.")
-                print("[DeepfakeDetector] Please download the trained .pth file to this location")
-                print("="*50)
-            
-            self.model = self.model.to(self.device)
-            self.model.eval() # Set model to evaluation mode
-            
+            # Load MobileNet V3 small backbone (ImageNet pre-trained)
+            model = mobilenet_v3_small(pretrained=True)
+            # Attempt a safe modification of classifier to 2 classes
+            try:
+                # Many torchvision versions use model.classifier as nn.Sequential; handle gracefully
+                if hasattr(model, "classifier") and isinstance(model.classifier, torch.nn.Sequential):
+                    # Attempt to find final Linear and replace
+                    last_idx = len(model.classifier) - 1
+                    if isinstance(model.classifier[last_idx], torch.nn.Linear):
+                        in_features = model.classifier[last_idx].in_features
+                        model.classifier[last_idx] = torch.nn.Linear(in_features=in_features, out_features=2)
+                    else:
+                        # As a fallback, append a new Linear layer
+                        model.classifier.add_module("fc_out", torch.nn.Linear(1024, 2))
+                else:
+                    # If classifier shape is unexpected, try to set an attribute safely
+                    try:
+                        model.classifier = torch.nn.Sequential(torch.nn.Linear(1024, 2))
+                    except Exception:
+                        logger.warning("Unexpected MobileNet classifier structure; classifier modification attempted but may be incorrect.")
+                self.model = model
+            except Exception as e:
+                logger.exception("Failed to modify MobileNet classifier: %s", e)
+                self.model = model  # keep original to avoid crashing
         except Exception as e:
-            print(f"[DeepfakeDetector] CRITICAL Error initializing model: {e}")
+            logger.exception("Failed to instantiate MobileNetV3 backbone: %s", e)
             self.model = None
-        
-        # Preprocessing
+
+        # Attempt to load trained weights if available
+        self.model_path = Path("models") / "deepfake_mobilenet.pth"
+        if self.model is not None:
+            if self.model_path.exists():
+                try:
+                    state = torch.load(str(self.model_path), map_location=self.device)
+                    # If state is a dict with 'model' key, try to handle common wrappers
+                    if isinstance(state, dict) and "model" in state and isinstance(state["model"], dict):
+                        state = state["model"]
+                    self.model.load_state_dict(state)
+                    logger.info("Loaded deepfake model weights from %s", self.model_path)
+                except Exception as e:
+                    logger.exception("Failed to load model weights from %s: %s", self.model_path, e)
+                    logger.warning("Model will operate without trained weights (predictions may be random).")
+            else:
+                logger.warning("Deepfake model weights not found at %s. The classifier will run untrained if used.", self.model_path)
+
+            try:
+                self.model = self.model.to(self.device)
+                self.model.eval()
+            except Exception:
+                logger.exception("Failed to move model to device or set to eval mode.")
+
+        # Preprocessing transforms
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((224, 224)),
@@ -68,139 +112,134 @@ class DeepfakeDetector:
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ])
 
-    def detect_and_classify(self, frame):
+    def detect_and_classify(self, frame: "np.ndarray") -> List[Dict[str, Any]]:
         """
-        Run RetinaFace to detect faces and MobileNetV3 to classify as real/fake.
-
-        Args:
-            frame (np.ndarray): BGR image from cv2
+        Detect faces in the input BGR frame and classify each as real/fake.
 
         Returns:
-            results (list): [
-                {
-                    "bbox": [x1, y1, x2, y2],
-                    "is_fake": bool,
-                    "confidence": float
-                },
-                ...
-            ]
+            list of dicts: {"bbox": [x1,y1,x2,y2], "is_fake": bool, "confidence": float}
         """
-        results = []
-        
-        if frame is None or frame.size == 0:
+        results: List[Dict[str, Any]] = []
+        if frame is None or getattr(frame, "size", 0) == 0:
             return results
-        
+
         try:
-            # Use RetinaFace if available
+            # Use RetinaFace/InsightFace if available
             if self.face_app is not None:
-                faces = self.face_app.get(frame)
-                
+                faces = []
+                try:
+                    # InsightFace FaceAnalysis expects BGR images; .get returns face objects
+                    faces = self.face_app.get(frame)
+                except Exception:
+                    # Some versions may use .detect or .get; try .detect as fallback
+                    try:
+                        faces = self.face_app.detect(frame)
+                    except Exception as e:
+                        logger.exception("InsightFace detection invocation failed: %s", e)
+                        faces = []
+
                 for face in faces:
-                    x1, y1, x2, y2 = face.bbox.astype(int)
-                    
-                    # Validate bbox
-                    if x1 < 0 or y1 < 0 or x2 >= frame.shape[1] or y2 >= frame.shape[0]:
-                        continue
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-                    
-                    crop = frame[y1:y2, x1:x2]
-                    
-                    if crop.size == 0:
-                        continue
-                    
-                    # Classify if model available
-                    if self.model is not None:
-                        is_fake, confidence = self._classify_face(crop)
-                    else:
-                        # Fallback: assume real if no model
-                        is_fake = False
-                        confidence = 0.5
-                    
-                    results.append({
-                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                        "is_fake": is_fake,
-                        "confidence": confidence
-                    })
+                    try:
+                        bbox = getattr(face, "bbox", None)
+                        if bbox is None:
+                            # Some face objects have 'bbox' or 'bbox_2d' or similar
+                            continue
+                        x1, y1, x2, y2 = bbox.astype(int)
+                        # basic bbox validation and clamping
+                        h, w = frame.shape[:2]
+                        if x2 <= x1 or y2 <= y1 or x1 >= w or y1 >= h:
+                            continue
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(w - 1, x2), min(h - 1, y2)
+                        crop = frame[y1:y2, x1:x2]
+                        if crop.size == 0:
+                            continue
+                        if self.model is not None:
+                            is_fake, confidence = self._classify_face(crop)
+                        else:
+                            is_fake, confidence = False, 0.5
+                        results.append({
+                            "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                            "is_fake": is_fake,
+                            "confidence": confidence
+                        })
+                    except Exception:
+                        logger.exception("Error processing face object returned by face_app")
             else:
-                # Fallback: use basic face detection
+                # Fallback detection using Haar cascade/OpenCV
                 results = self._fallback_detection(frame)
-                
         except Exception as e:
-            print(f"[DeepFakeDetector] Error in detect_and_classify: {e}")
-        
+            logger.exception("Error in detect_and_classify: %s", e)
+
         return results
-    
-    def _classify_face(self, crop):
-        """Classify a face crop as real/fake"""
+
+    def _classify_face(self, crop: "np.ndarray") -> Tuple[bool, float]:
+        """
+        Classify a face crop (BGR) as fake/real using the model.
+        Returns (is_fake, confidence) where confidence is probability of predicted class.
+        """
         try:
-            # Convert BGR crop to RGB for PyTorch model
             rgb_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             img_tensor = self.transform(rgb_crop).unsqueeze(0).to(self.device)
-            
+
             with torch.no_grad():
                 logits = self.model(img_tensor)
-                # Apply softmax to get probabilities
                 probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                
-                # Class 0 = real, Class 1 = fake
-                is_fake = bool(np.argmax(probs) == 1)
-                
-                # Confidence is the probability of the predicted class
+                # By convention: index 0 -> real, index 1 -> fake (matching training)
+                predicted = int(np.argmax(probs))
+                is_fake = bool(predicted == 1)
                 confidence = float(probs[1] if is_fake else probs[0])
-            
             return is_fake, confidence
         except Exception as e:
-            print(f"[DeepfakeDetector] Classification error: {e}")
-            return False, 0.5 # Default to 'real' on error
-    
-    def _fallback_detection(self, frame):
-        """Basic face detection without RetinaFace"""
+            logger.exception("Classification error: %s", e)
+            # On failure, default to 'real' with neutral confidence
+            return False, 0.5
+
+    def _fallback_detection(self, frame: "np.ndarray") -> List[Dict[str, Any]]:
+        """
+        Use OpenCV Haar Cascade to find faces when InsightFace isn't available.
+        Returns simple detections with is_fake=False and confidence=0.5
+        """
         try:
-            # Use OpenCV's Haar Cascade as fallback
-            face_cascade_path = os.path.join(
-                cv2.data.haarcascades, 'haarcascade_frontalface_default.xml'
-            )
-            if not os.path.exists(face_cascade_path):
-                print("[DeepfakeDetector] Fallback 'haarcascade' file not found.")
+            cascade_path = os.path.join(cv2.data.haarcascades, "haarcascade_frontalface_default.xml")
+            if not os.path.exists(cascade_path):
+                logger.warning("Haar cascade file not found at %s", cascade_path)
                 return []
-                
-            face_cascade = cv2.CascadeClassifier(face_cascade_path)
+
+            face_cascade = cv2.CascadeClassifier(cascade_path)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-            
-            results = []
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
+
+            results: List[Dict[str, Any]] = []
             for (x, y, w, h) in faces:
                 results.append({
-                    "bbox": [int(x), int(y), int(x+w), int(y+h)],
-                    "is_fake": False,  # Can't classify without model
+                    "bbox": [int(x), int(y), int(x + w), int(y + h)],
+                    "is_fake": False,
                     "confidence": 0.5
                 })
             return results
         except Exception as e:
-            print(f"[DeepfakeDetector] Fallback detection error: {e}")
+            logger.exception("Fallback detection error: %s", e)
             return []
 
-    def log_deepfake_event(self, camera_id: int, frame_id: int, detection: dict):
+    def log_deepfake_event(self, camera_id: int, frame_id: int, detection: Dict[str, Any]) -> None:
         """
-        --- DEPRECATED ---
-        This function logs to a local text file and is no longer
-        recommended. Logging is now handled by the 'log_deepfake'
-        function in 'utils/db.py' from the 'routes/deepfake.py' file,
-        which saves to MongoDB for a persistent, queryable audit trail.
-        This function is kept for compatibility only.
+        Legacy/local logging helper. Kept for backwards compatibility.
+        Prefer centralized DB logging in routes/deepfake.py -> utils/db.py
         """
         try:
             os.makedirs("data/deepfake_logs", exist_ok=True)
-            log_path = os.path.join("data/deepfake_logs", "events.log")
-            
-            log_entry = (
-                f"Camera {camera_id} | Frame {frame_id} | "
-                f"Fake={detection['is_fake']} | Confidence={detection['confidence']:.2f} | "
-                f"BBox={detection['bbox']}\n"
+            log_path = Path("data/deepfake_logs") / "events.log"
+            entry = (
+                f"{datetime_now_iso()} | Camera {camera_id} | Frame {frame_id} | "
+                f"Fake={detection.get('is_fake')} | Confidence={float(detection.get('confidence', 0.0)):.2f} | "
+                f"BBox={detection.get('bbox')}\n"
             )
-            
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(log_entry)
-        except Exception as e:
-            print(f"[DeepfakeDetector] Failed to log event: {e}")
+            with open(log_path, "a", encoding="utf-8") as fh:
+                fh.write(entry)
+        except Exception:
+            logger.exception("Failed to write local deepfake log")
+
+def datetime_now_iso() -> str:
+    from datetime import datetime
+    return datetime.now().isoformat()

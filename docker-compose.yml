@@ -1,4 +1,3 @@
-# docker-compose.yml
 version: "3.8"
 
 services:
@@ -23,15 +22,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: frp_backend
-    # If you don't have a Dockerfile in backend, start with a simple python image command:
-    # image: python:3.11-slim
     restart: always
     env_file:
       - ./backend/.env
     volumes:
-      - ./backend:/app/backend:ro
-      - ./backend/data:/app/backend/data
-      - ./data:/app/data
+      - ./backend:/app/backend:rw
+      - ./backend/data:/app/backend/data:rw
+      - ./data:/app/data:rw
     ports:
       - "8000:8000"
     depends_on:
@@ -49,7 +46,7 @@ services:
       - /app/node_modules
     ports:
       - "5173:5173"
-    command: sh -c "npm install --silent && npm run dev -- --host"
+    command: sh -c "npm ci --silent && npm run dev -- --host"
     environment:
       - CHOKIDAR_USEPOLLING=true
 

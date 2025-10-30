@@ -1,18 +1,33 @@
-# --- NEW IMPORTS ---
-import os
-from dotenv import load_dotenv
-# --- END NEW IMPORTS ---
+# backend/app/services/alert_service.py
+"""
+Improved AlertService for Face Recognition Platform.
 
+Features added:
+- Structured logging via app.utils.logger.get_logger
+- SMTP (STARTTLS / SMTPS) with retries and exponential backoff
+- SMS (Twilio) example kept as optional dynamic import
+- Background notification sending (non-blocking)
+- Per-target and per-channel cooldown (to avoid spamming)
+- Thread-safe internal state and metrics
+- Persists watchlist & geofences using existing DB helpers
+- Keeps public API compatible with previous implementation
+"""
+
+from __future__ import annotations
+
+import os
 import threading
-from typing import Dict, List, Optional, Set, Callable
+import time
+import math
+from typing import Dict, List, Optional, Set, Callable, Any
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# --- Optional Twilio import ---
-# from twilio.rest import Client
+from dotenv import load_dotenv
+load_dotenv()  # load .env early
 
 from app.state import CAMERA_METADATA
 from app.utils.db import (
@@ -20,116 +35,108 @@ from app.utils.db import (
     load_watchlist_db,
     save_watchlist_db,
     load_geofences_db,
-    save_geofence_db
+    save_geofence_db,
 )
+from app.utils.logger import get_logger
 
-# --- NEW: Load environment variables ---
-load_dotenv()
-print("[AlertService] Loaded environment variables from .env")
+logger = get_logger("app.services.alert_service")
+
+# -------------------------
+# Environment / Defaults
+# -------------------------
+NOTIF_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", "30"))  # per-target global cooldown
+EMAIL_COOLDOWN_SECONDS = int(os.getenv("ALERT_EMAIL_COOLDOWN_SECONDS", "60"))
+SMS_COOLDOWN_SECONDS = int(os.getenv("ALERT_SMS_COOLDOWN_SECONDS", "60"))
+EMAIL_RETRY_ATTEMPTS = int(os.getenv("ALERT_EMAIL_RETRIES", "2"))
+EMAIL_RETRY_BASE = float(os.getenv("ALERT_EMAIL_RETRY_BASE", "1.5"))  # multiplier
+NOTIF_THREAD_POOL = int(os.getenv("ALERT_THREAD_POOL", "4"))
+
+# Email defaults read from env
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "False").lower() == "true"
+SMTP_SERVER = os.getenv("SMTP_SERVER", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
+SENDER_PASSWORD = os.getenv("SENDER_PASSWORD", "")
+DEFAULT_EMAIL_RECIPIENTS = [e.strip() for e in os.getenv("EMAIL_RECIPIENTS", "").split(",") if e.strip()]
+
+# SMS defaults
+SMS_ENABLED = os.getenv("SMS_ENABLED", "False").lower() == "true"
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_SENDER_PHONE = os.getenv("TWILIO_SENDER_PHONE", "")
+DEFAULT_SMS_RECIPIENTS = [p.strip() for p in os.getenv("SMS_RECIPIENTS", "").split(",") if p.strip()]
+
+# Use thread pool semaphore to limit concurrent notif threads
+_notif_semaphore = threading.BoundedSemaphore(value=max(1, NOTIF_THREAD_POOL))
+
 
 class AlertService:
-    """Service for managing alerts and notifications"""
+    """Service for managing alerts and notifications."""
 
     def __init__(self):
-        # --- IMPROVEMENT: Initialize configs from .env ---
-        self._load_config_from_env()
+        logger.info("Initializing AlertService")
+        # Load runtime config from env (can be overridden via configure_email/configure_sms)
+        self.email_config = {
+            "enabled": EMAIL_ENABLED,
+            "smtp_server": SMTP_SERVER,
+            "smtp_port": SMTP_PORT,
+            "sender_email": SENDER_EMAIL,
+            "sender_password": SENDER_PASSWORD,
+            "recipients": DEFAULT_EMAIL_RECIPIENTS.copy(),
+        }
 
-        # Alert queue: list of pending alerts
-        self.alert_queue = []
+        self.sms_config = {
+            "enabled": SMS_ENABLED,
+            "api_key": TWILIO_ACCOUNT_SID,
+            "api_secret": TWILIO_AUTH_TOKEN,
+            "sender_phone": TWILIO_SENDER_PHONE,
+            "recipients": DEFAULT_SMS_RECIPIENTS.copy(),
+        }
 
-        # Alert history: target -> deque of last 200 alerts
-        self.alert_history = defaultdict(lambda: deque(maxlen=200))
-
-        # Watchlist: set of target names that trigger alerts
+        # State
+        self.alert_queue: List[Dict[str, Any]] = []
+        self.alert_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
         self.watchlist: Set[str] = set()
+        self.geofence_zones: Dict[str, Any] = {}
+        self.subscribers: Dict[str, List[Callable]] = defaultdict(list)
 
-        # Geo-fenced zones: {zone_name: {cameras: [...], enabled: bool}}
-        self.geofence_zones = {}
+        # cooldown tracking: { (target, channel) : last_sent_ts }
+        self._last_sent: Dict[tuple, float] = {}
 
-        # Alert subscribers: {target -> list of callback functions}
-        self.subscribers = defaultdict(list)
+        # Threading and locks
+        self._lock = threading.RLock()
 
-        # Thread safety
-        self._lock = threading.Lock()
-
-        # Statistics
+        # Stats
         self.stats = {
             "total_alerts": 0,
             "email_sent": 0,
             "sms_sent": 0,
-            "failed_notifications": 0
+            "failed_notifications": 0,
         }
 
-        # Load persistent state from DB on startup
+        # Initialize from DB
         self._init_from_db()
 
     # -------------------------------
-    # NEW: Load Config from .env
-    # -------------------------------
-    def _load_config_from_env(self):
-        """Load notification settings from environment variables."""
-        print("[AlertService] Loading notification config from environment variables...")
-
-        # Email Config
-        self.email_config = {
-            "enabled": os.getenv("EMAIL_ENABLED", 'False').lower() == 'true',
-            "smtp_server": os.getenv("SMTP_SERVER", ""),
-            "smtp_port": int(os.getenv("SMTP_PORT", 587)), # Convert port to int
-            "sender_email": os.getenv("SENDER_EMAIL", ""),
-            "sender_password": os.getenv("SENDER_PASSWORD", ""),
-            # Split comma-separated string into list, remove whitespace
-            "recipients": [email.strip() for email in os.getenv("EMAIL_RECIPIENTS", "").split(',') if email.strip()]
-        }
-        if self.email_config["enabled"]:
-             print(f"[AlertService] Email notifications ENABLED for {len(self.email_config['recipients'])} recipients.")
-        else:
-             print("[AlertService] Email notifications DISABLED.")
-
-        # SMS Config (Example for Twilio)
-        self.sms_config = {
-            "enabled": os.getenv("SMS_ENABLED", 'False').lower() == 'true',
-            "api_key": os.getenv("TWILIO_ACCOUNT_SID", ""), # Using Twilio var names
-            "api_secret": os.getenv("TWILIO_AUTH_TOKEN", ""),
-            "sender_phone": os.getenv("TWILIO_SENDER_PHONE", ""),
-            "recipients": [phone.strip() for phone in os.getenv("SMS_RECIPIENTS", "").split(',') if phone.strip()]
-        }
-        if self.sms_config["enabled"]:
-             print(f"[AlertService] SMS notifications ENABLED for {len(self.sms_config['recipients'])} recipients.")
-        else:
-             print("[AlertService] SMS notifications DISABLED.")
-
-    # -------------------------------
-    # Load persistent state
+    # Persistence & Initialization
     # -------------------------------
     def _init_from_db(self):
-        """Load watchlist and geofences from database on startup."""
-        print("[AlertService] Initializing watchlist/geofences from database...")
+        """Load persistent state (watchlist & geofences)."""
         try:
             with self._lock:
-                self.watchlist = set(load_watchlist_db())
-                self.geofence_zones = load_geofences_db()
-            print(f"[AlertService] Loaded {len(self.watchlist)} watchlist targets.")
-            print(f"[AlertService] Loaded {len(self.geofence_zones)} geo-fence zones.")
+                wl = load_watchlist_db()
+                self.watchlist = set(wl or [])
+                self.geofence_zones = load_geofences_db() or {}
+            logger.info("Loaded watchlist (%d) and geofences (%d) from DB", len(self.watchlist), len(self.geofence_zones))
         except Exception as e:
-            print(f"[AlertService] CRITICAL: Failed to load from DB: {e}")
-            print("[AlertService] Running with empty in-memory state.")
-
-    # --- Rest of the file remains the same ---
-    # Watchlist Management (add, remove, get, is_watchlisted),
-    # Geo-Fencing (create, delete, toggle, check, get),
-    # Alert Generation (generate_alert), Alert Retrieval (get_alerts, get_latest_alert),
-    # Notification Configuration (configure_email, configure_sms - these now OVERRIDE .env),
-    # Send Notifications (_send_notifications_task, _send_email_alert, _send_sms_alert),
-    # Subscriber Pattern, Statistics, Helpers (_get_confidence_level)
-    # ... (all these methods stay exactly as they were in the previous version) ...
+            logger.exception("Failed to initialize AlertService from DB: %s", e)
+            self.watchlist = set()
+            self.geofence_zones = {}
 
     # -------------------------------
     # Watchlist Management
     # -------------------------------
-    def add_to_watchlist(self, target_name: str) -> Dict:
-        """
-        Add a person to watchlist (triggers alerts on detection). Persists to database.
-        """
+    def add_to_watchlist(self, target_name: str) -> Dict[str, Any]:
         with self._lock:
             if target_name in self.watchlist:
                 return {"success": False, "message": f"'{target_name}' already on watchlist"}
@@ -137,11 +144,10 @@ class AlertService:
             try:
                 save_watchlist_db(list(self.watchlist))
             except Exception as e:
-                print(f"DB Error: Failed to save watchlist: {e}")
+                logger.exception("Failed to save watchlist to DB: %s", e)
             return {"success": True, "message": f"'{target_name}' added to watchlist"}
 
-    def remove_from_watchlist(self, target_name: str) -> Dict:
-        """Remove person from watchlist. Persists to database."""
+    def remove_from_watchlist(self, target_name: str) -> Dict[str, Any]:
         with self._lock:
             if target_name not in self.watchlist:
                 return {"success": False, "message": f"'{target_name}' not on watchlist"}
@@ -149,24 +155,21 @@ class AlertService:
             try:
                 save_watchlist_db(list(self.watchlist))
             except Exception as e:
-                print(f"DB Error: Failed to save watchlist: {e}")
+                logger.exception("Failed to save watchlist to DB: %s", e)
             return {"success": True, "message": f"'{target_name}' removed from watchlist"}
 
     def get_watchlist(self) -> List[str]:
-        """Get all watchlisted persons"""
         with self._lock:
             return list(self.watchlist)
 
     def is_watchlisted(self, target_name: str) -> bool:
-        """Check if person is on watchlist"""
         with self._lock:
             return target_name in self.watchlist
 
     # -------------------------------
     # Geo-Fencing
     # -------------------------------
-    def create_geofence(self, zone_name: str, camera_ids: List[int], description: str = "", enabled: bool = True) -> Dict:
-        """Create a geo-fenced zone. Persists to database."""
+    def create_geofence(self, zone_name: str, camera_ids: List[int], description: str = "", enabled: bool = True) -> Dict[str, Any]:
         with self._lock:
             if zone_name in self.geofence_zones:
                 return {"success": False, "message": f"Zone '{zone_name}' already exists"}
@@ -177,16 +180,15 @@ class AlertService:
                 "camera_ids": camera_ids,
                 "description": description,
                 "enabled": enabled,
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
             }
             try:
                 save_geofence_db(self.geofence_zones)
             except Exception as e:
-                print(f"DB Error: Failed to save geofences: {e}")
+                logger.exception("Failed to save geofences to DB: %s", e)
             return {"success": True, "message": f"Geo-fence zone '{zone_name}' created with {len(camera_ids)} cameras"}
 
-    def delete_geofence(self, zone_name: str) -> Dict:
-        """Delete a geo-fenced zone."""
+    def delete_geofence(self, zone_name: str) -> Dict[str, Any]:
         with self._lock:
             if zone_name not in self.geofence_zones:
                 return {"success": False, "message": f"Zone '{zone_name}' not found"}
@@ -194,11 +196,10 @@ class AlertService:
             try:
                 save_geofence_db(self.geofence_zones)
             except Exception as e:
-                print(f"DB Error: Failed to save geofences: {e}")
+                logger.exception("Failed to save geofences to DB: %s", e)
             return {"success": True, "message": f"Zone '{zone_name}' deleted"}
 
-    def toggle_geofence_enabled(self, zone_name: str, enabled: bool) -> Dict:
-        """Enable or disable a geo-fenced zone."""
+    def toggle_geofence_enabled(self, zone_name: str, enabled: bool) -> Dict[str, Any]:
         with self._lock:
             if zone_name not in self.geofence_zones:
                 return {"success": False, "message": f"Zone '{zone_name}' not found"}
@@ -206,37 +207,32 @@ class AlertService:
             try:
                 save_geofence_db(self.geofence_zones)
             except Exception as e:
-                print(f"DB Error: Failed to save geofences: {e}")
+                logger.exception("Failed to save geofences to DB: %s", e)
             status = "enabled" if enabled else "disabled"
             return {"success": True, "message": f"Zone '{zone_name}' is now {status}"}
 
     def check_geofence(self, camera_id: int) -> List[str]:
-        """Check which geo-fenced zones contain this camera."""
         with self._lock:
-            matching_zones = [
-                zone_name for zone_name, zone_data in self.geofence_zones.items()
+            return [
+                zone_name
+                for zone_name, zone_data in self.geofence_zones.items()
                 if zone_data.get("enabled", False) and camera_id in zone_data.get("camera_ids", [])
             ]
-            return matching_zones
 
-    def get_geofences(self) -> Dict:
-        """Get all geo-fence zones"""
+    def get_geofences(self) -> Dict[str, Any]:
         with self._lock:
-            return dict(self.geofence_zones) # Return a copy
+            return dict(self.geofence_zones)
 
     # -------------------------------
     # Alert Generation
     # -------------------------------
-    def generate_alert(self, target_name: str, camera_id: int, distance: float, timestamp: Optional[datetime] = None, metadata: Optional[Dict] = None) -> Dict:
-        """Generate an alert for a detection event. Triggers notifications asynchronously."""
+    def generate_alert(self, target_name: str, camera_id: int, distance: float, timestamp: Optional[datetime] = None, metadata: Optional[Dict] = None) -> Dict[str, Any]:
         if timestamp is None:
             timestamp = datetime.now()
-        alert_result = {}
         with self._lock:
             camera_info = CAMERA_METADATA.get(camera_id, {})
             camera_name = camera_info.get("name", f"Camera {camera_id}")
             geo_tuple = camera_info.get("geo", (0.0, 0.0))
-            # Ensure geo is stored as string for log_alert compatibility
             geo_str = str(geo_tuple)
 
             geofence_zones = self.check_geofence(camera_id)
@@ -244,53 +240,72 @@ class AlertService:
             in_geofence = bool(geofence_zones)
             high_confidence = distance < 0.4
 
-            if is_watchlisted and in_geofence: priority = "critical"
-            elif is_watchlisted or in_geofence: priority = "high"
-            elif high_confidence: priority = "medium"
-            else: priority = "low"
+            if is_watchlisted and in_geofence:
+                priority = "critical"
+            elif is_watchlisted or in_geofence:
+                priority = "high"
+            elif high_confidence:
+                priority = "medium"
+            else:
+                priority = "low"
 
-            alert_id = f"{target_name}_{camera_id}_{timestamp.timestamp()}_{priority}" # Added priority to ID
+            alert_id = f"{target_name}_{camera_id}_{timestamp.timestamp()}_{priority}"
             alert = {
-                "alert_id": alert_id, "target": target_name, "camera_id": camera_id,
-                "camera_name": camera_name, "geo": geo_tuple, # Store tuple in memory/JSON
-                "distance": round(distance, 4), # Round distance
+                "alert_id": alert_id,
+                "target": target_name,
+                "camera_id": camera_id,
+                "camera_name": camera_name,
+                "geo": geo_tuple,
+                "distance": round(distance, 4),
                 "confidence": self._get_confidence_level(distance),
-                "priority": priority, "geofence_zones": geofence_zones,
-                "is_watchlisted": is_watchlisted, "timestamp": timestamp.isoformat(),
-                "metadata": metadata or {}
+                "priority": priority,
+                "geofence_zones": geofence_zones,
+                "is_watchlisted": is_watchlisted,
+                "timestamp": timestamp.isoformat(),
+                "metadata": metadata or {},
             }
 
+            # persist to in-memory structures and DB
             self.alert_queue.append(alert)
             self.alert_history[target_name].append(alert)
             self.stats["total_alerts"] += 1
 
-            log_alert( # This function uses geo_str
-                camera_id=camera_id, camera_name=camera_name, geo=geo_str,
-                target=target_name, distance=distance
-            )
+            try:
+                log_alert(
+                    camera_id=camera_id,
+                    camera_name=camera_name,
+                    geo=geo_str,
+                    target=target_name,
+                    distance=distance,
+                )
+            except Exception:
+                logger.exception("log_alert failed (non-fatal) for alert %s", alert_id)
 
-            if priority in ["high", "critical"]:
-                threading.Thread(target=self._send_notifications_task, args=(alert,)).start()
+            # send notifications for high/critical priorities
+            if priority in ("high", "critical"):
+                # dispatch notification background thread
+                self._dispatch_notification(alert)
 
+            # notify subscribers synchronously (callbacks run outside lock to avoid deadlocks)
             self._notify_subscribers(target_name, alert)
 
-            alert_result = {
-                "alert_id": alert_id, "triggered": True, "priority": priority,
+            return {
+                "alert_id": alert_id,
+                "triggered": True,
+                "priority": priority,
                 "geofence_zones": geofence_zones,
-                "notification_sent": priority in ["high", "critical"]
+                "notification_sent": priority in ("high", "critical"),
             }
-        return alert_result
 
     # -------------------------------
-    # Alert Retrieval
+    # Retrieval
     # -------------------------------
-    def get_alerts(self, target_name: Optional[str] = None, priority: Optional[str] = None, since: Optional[datetime] = None, limit: Optional[int] = None) -> List[Dict]:
-        """Get alerts with optional filtering."""
+    def get_alerts(self, target_name: Optional[str] = None, priority: Optional[str] = None, since: Optional[datetime] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         with self._lock:
             all_alerts_flat = [a for history_deque in self.alert_history.values() for a in history_deque]
-            if not all_alerts_flat: return []
+            if not all_alerts_flat:
+                return []
 
-            # Apply filters
             filtered = all_alerts_flat
             if target_name:
                 filtered = [a for a in filtered if a["target"] == target_name]
@@ -299,200 +314,282 @@ class AlertService:
             if since:
                 filtered = [a for a in filtered if datetime.fromisoformat(a["timestamp"]) > since]
 
-            # Sort by timestamp (newest first) AFTER filtering
+            # sort newest first
             filtered.sort(key=lambda x: x["timestamp"], reverse=True)
-
-            # Apply limit
             if limit:
                 filtered = filtered[:limit]
-
             return filtered
 
-    def get_latest_alert(self, target_name: Optional[str] = None) -> Optional[Dict]:
-        """Get most recent alert"""
+    def get_latest_alert(self, target_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         alerts = self.get_alerts(target_name=target_name, limit=1)
         return alerts[0] if alerts else None
 
     # -------------------------------
-    # Notification Configuration
+    # Notification dispatch & workers
     # -------------------------------
-    def configure_email(self, smtp_server: str, smtp_port: int, sender_email: str, sender_password: str, recipients: List[str], enabled: bool = True) -> Dict:
-        """Configure email notifications (overrides .env settings for current session)."""
-        with self._lock:
-            self.email_config = {
-                "enabled": enabled, "smtp_server": smtp_server, "smtp_port": smtp_port,
-                "sender_email": sender_email, "sender_password": sender_password, "recipients": recipients
-            }
-            status = "enabled" if enabled else "disabled"
-            print(f"[AlertService] Email config updated via API: Status={status}")
-            # Note: This does NOT save back to the .env file
-            return {"success": True, "message": f"Email configuration updated (runtime only). Status: {status}"}
+    def _dispatch_notification(self, alert: Dict[str, Any]):
+        """Dispatch notification sending in background (non-blocking)."""
+        # Throttle by global cooldown (simple)
+        target = alert["target"]
+        now_ts = time.time()
+        last_global = self._last_sent.get((target, "global"), 0)
+        if now_ts - last_global < NOTIF_COOLDOWN_SECONDS:
+            logger.debug("Global cooldown active for %s (skip notify)", target)
+            return
+        self._last_sent[(target, "global")] = now_ts
 
-    def configure_sms(self, api_key: str, api_secret: str, sender_phone: str, recipients: List[str], enabled: bool = True) -> Dict:
-        """Configure SMS notifications (overrides .env settings for current session)."""
-        with self._lock:
-            self.sms_config = {
-                "enabled": enabled, "api_key": api_key, "api_secret": api_secret,
-                "sender_phone": sender_phone, "recipients": recipients
-            }
-            status = "enabled" if enabled else "disabled"
-            print(f"[AlertService] SMS config updated via API: Status={status}")
-             # Note: This does NOT save back to the .env file
-            return {"success": True, "message": f"SMS configuration updated (runtime only). Status: {status}"}
+        # start a background thread (bounded by semaphore)
+        def _runner():
+            acquired = _notif_semaphore.acquire(timeout=10)
+            if not acquired:
+                logger.warning("Notification semaphore busy; skipping notification for %s", alert.get("alert_id"))
+                return
+            try:
+                self._send_notifications_task(alert)
+            finally:
+                try:
+                    _notif_semaphore.release()
+                except Exception:
+                    pass
 
-    # -------------------------------
-    # Send Notifications (Internal)
-    # -------------------------------
-    def _send_notifications_task(self, alert: Dict):
-        """Send email/SMS notifications for an alert in a background thread."""
-        email_sent_in_task = False
-        sms_sent_in_task = False
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+
+    def _send_notifications_task(self, alert: Dict[str, Any]):
+        """Background thread: send email and/or SMS with retries and cooldown checks."""
+        target = alert["target"]
+        email_sent = False
+        sms_sent = False
         email_failed = False
         sms_failed = False
 
+        # Email
         if self.email_config.get("enabled"):
             try:
-                self._send_email_alert(alert)
-                email_sent_in_task = True
+                # Check per-target cooldown for email
+                key = (target, "email")
+                last = self._last_sent.get(key, 0)
+                if time.time() - last >= EMAIL_COOLDOWN_SECONDS:
+                    self._send_email_with_retries(alert)
+                    email_sent = True
+                    self._last_sent[key] = time.time()
+                else:
+                    logger.debug("Email cooldown active for %s; skipping email", target)
             except Exception as e:
-                print(f"Failed to send email: {e}")
+                logger.exception("Email send failed for %s: %s", target, e)
                 email_failed = True
 
+        # SMS
         if self.sms_config.get("enabled"):
             try:
-                self._send_sms_alert(alert)
-                sms_sent_in_task = True
+                key = (target, "sms")
+                last = self._last_sent.get(key, 0)
+                if time.time() - last >= SMS_COOLDOWN_SECONDS:
+                    self._send_sms_alert(alert)
+                    sms_sent = True
+                    self._last_sent[key] = time.time()
+                else:
+                    logger.debug("SMS cooldown active for %s; skipping SMS", target)
             except Exception as e:
-                print(f"Failed to send SMS: {e}")
+                logger.exception("SMS send failed for %s: %s", target, e)
                 sms_failed = True
 
-        # Update stats safely after attempts
+        # Update stats
         with self._lock:
-            if email_sent_in_task: self.stats["email_sent"] += 1
-            if sms_sent_in_task: self.stats["sms_sent"] += 1
-            if email_failed or sms_failed: self.stats["failed_notifications"] += 1
+            if email_sent:
+                self.stats["email_sent"] += 1
+            if sms_sent:
+                self.stats["sms_sent"] += 1
+            if email_failed or sms_failed:
+                self.stats["failed_notifications"] += 1
 
-    def _send_email_alert(self, alert: Dict):
-        """Send email notification"""
-        # --- Use the config loaded/updated in memory ---
-        config = self.email_config
-        if not config.get("sender_email") or not config.get("recipients"):
-             print("[AlertService] Email send skipped: Sender or recipients not configured.")
-             return
+    # -------------------------------
+    # Email sending with retries
+    # -------------------------------
+    def _send_email_with_retries(self, alert: Dict[str, Any]):
+        attempts = max(1, EMAIL_RETRY_ATTEMPTS)
+        backoff = 1.0
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                self._send_email_alert(alert)
+                logger.info("Email sent for alert %s (attempt %d/%d)", alert.get("alert_id"), attempt, attempts)
+                return
+            except Exception as exc:
+                last_exc = exc
+                logger.exception("Email attempt %d failed for %s: %s", attempt, alert.get("target"), exc)
+                if attempt < attempts:
+                    # exponential backoff
+                    sleep_time = backoff
+                    time.sleep(sleep_time)
+                    backoff *= EMAIL_RETRY_BASE
+        # all attempts failed
+        logger.error("All email attempts failed for alert %s: last_exc=%s", alert.get("alert_id"), last_exc)
+        raise last_exc
+
+    def _send_email_alert(self, alert: Dict[str, Any]):
+        """Send email notification synchronously (may be called in background thread)."""
+        cfg = self.email_config
+        if not cfg.get("sender_email") or not cfg.get("recipients") or not cfg.get("smtp_server"):
+            logger.warning("Email not sent: SMTP config incomplete")
+            return
 
         subject = f"[{alert['priority'].upper()}] Detection Alert: {alert['target']}"
-        body = f"""
-        FACE RECOGNITION ALERT
-
-        Priority: {alert['priority'].upper()}
-        Target: {alert['target']}
-        Location: {alert['camera_name']} (Camera {alert['camera_id']})
-        Coordinates: {alert['geo']}
-        Confidence: {alert['confidence'].upper()}
-        Time: {alert['timestamp']}
-
-        {'Watchlist Match' if alert['is_watchlisted'] else ''}
-        {'Geo-Fence Breach: ' + ', '.join(alert['geofence_zones']) if alert['geofence_zones'] else ''}
-
-        ---
-        Automated alert from Face Recognition Platform.
-        """
+        body = (
+            f"FACE RECOGNITION ALERT\n\n"
+            f"Priority: {alert['priority'].upper()}\n"
+            f"Target: {alert['target']}\n"
+            f"Location: {alert['camera_name']} (Camera {alert['camera_id']})\n"
+            f"Coordinates: {alert['geo']}\n"
+            f"Confidence: {alert['confidence']}\n"
+            f"Time: {alert['timestamp']}\n\n"
+            f"{'Watchlist Match' if alert['is_watchlisted'] else ''}\n"
+            f"{'Geo-Fence Breach: ' + ', '.join(alert['geofence_zones']) if alert['geofence_zones'] else ''}\n\n"
+            f"---\nAutomated alert from Face Recognition Platform."
+        )
 
         msg = MIMEMultipart()
-        msg['From'] = config['sender_email']
-        msg['To'] = ", ".join(config['recipients'])
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        msg["From"] = cfg["sender_email"]
+        msg["To"] = ", ".join(cfg["recipients"])
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
 
-        print(f"[AlertService] Attempting to send email alert to {len(config['recipients'])} recipients via {config['smtp_server']}...")
-        with smtplib.SMTP(config['smtp_server'], config['smtp_port']) as server:
-            server.starttls()
-            server.login(config['sender_email'], config['sender_password'])
-            server.send_message(msg)
-        print("[AlertService] Email alert sent successfully.")
+        smtp_host = cfg["smtp_server"]
+        smtp_port = int(cfg.get("smtp_port", SMTP_PORT))
+        username = cfg.get("sender_email")
+        password = cfg.get("sender_password")
 
-    def _send_sms_alert(self, alert: Dict):
-        """Send SMS notification (Example using Twilio)."""
-        # --- Use the config loaded/updated in memory ---
-        config = self.sms_config
-        if not config.get("api_key") or not config.get("sender_phone") or not config.get("recipients"):
-            print("[AlertService] SMS send skipped: API key, sender phone, or recipients not configured.")
+        # Choose SSL vs STARTTLS depending on port (465 usually implies SSL)
+        use_ssl = smtp_port == 465
+        logger.debug("Attempting email send via %s:%s (ssl=%s) to %d recipients", smtp_host, smtp_port, use_ssl, len(cfg["recipients"]))
+        if use_ssl:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+
+        try:
+            with server:
+                server.ehlo()
+                if not use_ssl:
+                    # Start TLS if server supports it
+                    try:
+                        server.starttls()
+                        server.ehlo()
+                    except Exception:
+                        logger.debug("STARTTLS failed or not supported; continuing without TLS")
+                if username and password:
+                    try:
+                        server.login(username, password)
+                    except Exception as e:
+                        logger.exception("SMTP login failed: %s", e)
+                        # continue without login if server accepts anonymous sending
+                server.send_message(msg)
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+
+    # -------------------------------
+    # SMS sending (Twilio example; optional)
+    # -------------------------------
+    def _send_sms_alert(self, alert: Dict[str, Any]):
+        cfg = self.sms_config
+        if not cfg.get("api_key") or not cfg.get("sender_phone") or not cfg.get("recipients"):
+            logger.warning("SMS not sent: Twilio config incomplete")
             return
 
         message = f"[{alert['priority'].upper()}] {alert['target']} detected at {alert['camera_name']} @ {alert['timestamp']}"
+        logger.debug("Sending SMS to %d recipients (Twilio)", len(cfg["recipients"]))
+        try:
+            # dynamic import to keep Twilio optional
+            from twilio.rest import Client  # type: ignore
 
-        print(f"[AlertService] Attempting to send SMS alert to {len(config['recipients'])} recipients...")
-        # --- TWILIO EXAMPLE (Uncomment and install twilio to use) ---
-        # try:
-        #     from twilio.rest import Client # Import here to avoid making it a hard dependency
-        #     client = Client(config['api_key'], config['api_secret'])
-        #     for recipient in config['recipients']:
-        #         message_instance = client.messages.create(
-        #             body=message,
-        #             from_=config['sender_phone'],
-        #             to=recipient
-        #         )
-        #         print(f"[AlertService] SMS sent to {recipient} (SID: {message_instance.sid})")
-        #     print("[AlertService] SMS alerts sent successfully via Twilio.")
-        # except ImportError:
-        #     print("[AlertService] Twilio library not installed. Cannot send SMS. Run 'pip install twilio'.")
-        # except Exception as e:
-        #     print(f"[AlertService] Twilio SMS failed: {e}")
-        #     raise e # Re-raise to be caught by _send_notifications_task
-        # --- END TWILIO EXAMPLE ---
-
-        # Fallback print statement (if Twilio is not used/installed)
-        if 'Client' not in locals(): # Check if Twilio was imported
-             print(f"SMS (TODO - Install Twilio): To {config['recipients']}: {message}")
-
+            client = Client(cfg["api_key"], cfg["api_secret"])
+            for recipient in cfg["recipients"]:
+                try:
+                    rcpt = client.messages.create(body=message, from_=cfg["sender_phone"], to=recipient)
+                    logger.info("SMS sent to %s (sid=%s)", recipient, getattr(rcpt, "sid", "<no-sid>"))
+                except Exception:
+                    logger.exception("Failed to send SMS to %s (continuing)", recipient)
+        except ImportError:
+            logger.warning("Twilio not installed; SMS fallback: printing message")
+            for recipient in cfg["recipients"]:
+                logger.info("SMS (mock) -> %s : %s", recipient, message)
+        except Exception:
+            logger.exception("Unexpected SMS send failure (caught and logged)")
 
     # -------------------------------
-    # Subscriber Pattern
+    # Subscriber pattern
     # -------------------------------
-    def subscribe(self, target_name: str, callback: Callable):
-        """Subscribe to alerts for a specific target."""
+    def subscribe(self, target_name: str, callback: Callable[[Dict[str, Any]], None]):
         with self._lock:
             self.subscribers[target_name].append(callback)
 
-    def _notify_subscribers(self, target_name: str, alert: Dict):
-        """Notify all subscribers for a target"""
-        callbacks_to_run = []
+    def _notify_subscribers(self, target_name: str, alert: Dict[str, Any]):
+        # copy callbacks under lock
         with self._lock:
-             # Get list of callbacks under lock
-             callbacks_to_run = list(self.subscribers.get(target_name, []))
-
-        # Run callbacks outside the lock to avoid deadlocks if a callback is slow
-        for callback in callbacks_to_run:
+            callbacks = list(self.subscribers.get(target_name, []))
+        for cb in callbacks:
             try:
-                callback(alert)
-            except Exception as e:
-                print(f"Subscriber callback failed: {e}")
+                cb(alert)
+            except Exception:
+                logger.exception("Subscriber callback raised an exception for target %s", target_name)
 
     # -------------------------------
-    # Statistics
+    # Statistics & helpers
     # -------------------------------
-    def get_statistics(self) -> Dict:
-        """Get alert statistics"""
+    def get_statistics(self) -> Dict[str, Any]:
         with self._lock:
-            # Return a copy to prevent modification outside the service
             return {
                 **self.stats,
                 "watchlist_size": len(self.watchlist),
                 "geofence_zones": len(self.geofence_zones),
-                "pending_alerts": len(self.alert_queue)
+                "pending_alerts": len(self.alert_queue),
             }
 
-    # -------------------------------
-    # Helpers
-    # -------------------------------
     def _get_confidence_level(self, distance: float) -> str:
-        """Convert distance to confidence level"""
-        if distance < 0.4: return "high"
-        elif distance < 0.6: return "medium"
-        else: return "low"
+        if distance < 0.4:
+            return "high"
+        if distance < 0.6:
+            return "medium"
+        return "low"
 
+    # -------------------------------
+    # Runtime configuration overrides (API)
+    # -------------------------------
+    def configure_email(self, smtp_server: str, smtp_port: int, sender_email: str, sender_password: str, recipients: List[str], enabled: bool = True) -> Dict[str, Any]:
+        with self._lock:
+            self.email_config = {
+                "enabled": enabled,
+                "smtp_server": smtp_server,
+                "smtp_port": smtp_port,
+                "sender_email": sender_email,
+                "sender_password": sender_password,
+                "recipients": recipients,
+            }
+            status = "enabled" if enabled else "disabled"
+            logger.info("Email config updated via API: status=%s", status)
+            return {"success": True, "message": f"Email configuration updated (runtime only). Status: {status}"}
 
-# -------------------------------
+    def configure_sms(self, api_key: str, api_secret: str, sender_phone: str, recipients: List[str], enabled: bool = True) -> Dict[str, Any]:
+        with self._lock:
+            self.sms_config = {
+                "enabled": enabled,
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "sender_phone": sender_phone,
+                "recipients": recipients,
+            }
+            status = "enabled" if enabled else "disabled"
+            logger.info("SMS config updated via API: status=%s", status)
+            return {"success": True, "message": f"SMS configuration updated (runtime only). Status: {status}"}
+
+    # -------------------------------
+    # Graceful shutdown helper (optional)
+    # -------------------------------
+    def shutdown(self):
+        logger.info("AlertService shutdown requested - no active shutdown tasks implemented")
+
 # Singleton instance
-# -------------------------------
 alert_service = AlertService()

@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 import logging
 import json
@@ -47,59 +47,72 @@ async def get_alerts(
 ):
     """
     Get alerts with optional filtering, pagination, and sorting.
-    
-    **New Features:**
-    - Pagination support (offset/limit)
-    - Sorting by multiple fields
-    - Extended time range (up to 1 week)
-    - Input validation
     """
     try:
-        logger.info(f"Fetching alerts: target={target}, priority={priority}, limit={limit}, offset={offset}")
-        
+        logger.info("Fetching alerts: target=%s priority=%s limit=%s offset=%s", target, priority, limit, offset)
+
         # Validate priority
-        if priority and priority not in ["low", "medium", "high", "critical"]:
-            raise HTTPException(
-                status_code=400, 
-                detail="Invalid priority. Must be one of: low, medium, high, critical"
-            )
-        
+        if priority and priority not in {"low", "medium", "high", "critical"}:
+            raise HTTPException(status_code=400, detail="Invalid priority. Must be one of: low, medium, high, critical")
+
+        # Validate sort_by and sort_order
+        if sort_by not in {"timestamp", "priority", "target"}:
+            raise HTTPException(status_code=400, detail="Invalid sort_by. Must be one of: timestamp, priority, target")
+        if sort_order not in {"asc", "desc"}:
+            raise HTTPException(status_code=400, detail="Invalid sort_order. Must be 'asc' or 'desc'")
+
         # Calculate time filter
         since = None
         if since_minutes:
             since = datetime.now() - timedelta(minutes=since_minutes)
-        
-        # Get alerts from service
+
+        # Retrieve alerts from the service
+        # The service API expected: get_alerts(target_name, priority, since, limit)
+        # We request limit + offset to allow slicing locally if service doesn't support offset
+        service_limit = None if limit is None else (limit + offset)
         alerts = alert_service.get_alerts(
             target_name=target,
             priority=priority,
             since=since,
-            limit=limit + offset  # Get extra for offset
-        )
-        
-        # Apply offset
-        alerts = alerts[offset:]
-        
-        # Apply sorting (additional sort options)
+            limit=service_limit
+        ) or []
+
+        # Apply offset locally
+        if offset:
+            alerts = alerts[offset:]
+
+        # Apply sorting
+        reverse = (sort_order == "desc")
         if sort_by == "priority":
             priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-            alerts.sort(
-                key=lambda x: priority_order.get(x.get("priority", "low"), 99),
-                reverse=(sort_order == "desc")
-            )
+            alerts.sort(key=lambda x: priority_order.get(x.get("priority", "low"), 99), reverse=reverse)
         elif sort_by == "target":
-            alerts.sort(
-                key=lambda x: x.get("target", ""),
-                reverse=(sort_order == "desc")
-            )
-        # Default: timestamp (already sorted by service)
-        
-        logger.info(f"Successfully retrieved {len(alerts)} alerts")
-        
+            alerts.sort(key=lambda x: x.get("target", ""), reverse=reverse)
+        else:
+            # timestamp: attempt to sort by timestamp field if present
+            try:
+                alerts.sort(key=lambda x: x.get("timestamp", ""), reverse=reverse)
+            except Exception:
+                pass  # keep order as provided by service
+
+        # Attempt to get accurate total count if service provides a count method
+        total = None
+        try:
+            if hasattr(alert_service, "count_alerts"):
+                total = alert_service.count_alerts(target_name=target, priority=priority, since=since)
+        except Exception as e:
+            logger.debug("count_alerts not available or failed: %s", e)
+
+        if total is None:
+            # Fallback approximate total
+            total = len(alerts) + (offset or 0)
+
+        logger.info("Successfully retrieved %d alerts (returned: %d)", len(alerts), len(alerts))
+
         return JSONResponse({
             "status": "success",
             "count": len(alerts),
-            "total": len(alerts) + offset,  # Approximate total
+            "total": total,
             "offset": offset,
             "limit": limit,
             "alerts": alerts,
@@ -109,11 +122,11 @@ async def get_alerts(
                 "since_minutes": since_minutes
             }
         })
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching alerts: {str(e)}", exc_info=True)
+        logger.error("Error fetching alerts: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get alerts: {str(e)}")
 
 # -------------------------------
@@ -125,24 +138,13 @@ async def get_latest_alert(target: Optional[str] = Query(None)):
     Get most recent alert (optionally for specific target).
     """
     try:
-        logger.debug(f"Fetching latest alert for target: {target}")
-        
+        logger.debug("Fetching latest alert for target: %s", target)
         alert = alert_service.get_latest_alert(target_name=target)
-        
         if not alert:
-            return JSONResponse({
-                "status": "success",
-                "alert": None,
-                "message": "No alerts found"
-            })
-        
-        return JSONResponse({
-            "status": "success",
-            "alert": alert
-        })
-    
+            return JSONResponse({"status": "success", "alert": None, "message": "No alerts found"})
+        return JSONResponse({"status": "success", "alert": alert})
     except Exception as e:
-        logger.error(f"Error fetching latest alert: {str(e)}", exc_info=True)
+        logger.error("Error fetching latest alert: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get latest alert: {str(e)}")
 
 # -------------------------------
@@ -155,17 +157,10 @@ async def get_watchlist():
     """
     try:
         logger.debug("Fetching watchlist")
-        
-        watchlist = alert_service.get_watchlist()
-        
-        return JSONResponse({
-            "status": "success",
-            "count": len(watchlist),
-            "watchlist": sorted(watchlist)  # Sort for consistency
-        })
-    
+        watchlist = alert_service.get_watchlist() or []
+        return JSONResponse({"status": "success", "count": len(watchlist), "watchlist": sorted(watchlist)})
     except Exception as e:
-        logger.error(f"Error fetching watchlist: {str(e)}", exc_info=True)
+        logger.error("Error fetching watchlist: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get watchlist: {str(e)}")
 
 # -------------------------------
@@ -177,32 +172,24 @@ async def add_to_watchlist(target: str):
     Add a person to the watchlist.
     """
     try:
-        # Validate target name
         if not target or len(target.strip()) == 0:
             raise HTTPException(status_code=400, detail="Target name cannot be empty")
-        
         if len(target) > 255:
             raise HTTPException(status_code=400, detail="Target name too long (max 255 characters)")
-        
-        logger.info(f"Adding to watchlist: {target}")
-        
+
+        logger.info("Adding to watchlist: %s", target)
         result = alert_service.add_to_watchlist(target)
-        
-        if not result["success"]:
-            raise HTTPException(status_code=400, detail=result["message"])
-        
-        logger.info(f"Successfully added {target} to watchlist")
-        
-        return JSONResponse({
-            "status": "success",
-            "message": result["message"],
-            "target": target
-        })
-    
+
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("message", "Failed to add to watchlist"))
+
+        logger.info("Successfully added %s to watchlist", target)
+        return JSONResponse({"status": "success", "message": result.get("message", "Added to watchlist"), "target": target})
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error adding to watchlist: {str(e)}", exc_info=True)
+        logger.error("Error adding to watchlist: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to add to watchlist: {str(e)}")
 
 # -------------------------------
@@ -214,25 +201,16 @@ async def remove_from_watchlist(target: str):
     Remove a person from the watchlist.
     """
     try:
-        logger.info(f"Removing from watchlist: {target}")
-        
+        logger.info("Removing from watchlist: %s", target)
         result = alert_service.remove_from_watchlist(target)
-        
-        if not result["success"]:
-            raise HTTPException(status_code=404, detail=result["message"])
-        
-        logger.info(f"Successfully removed {target} from watchlist")
-        
-        return JSONResponse({
-            "status": "success",
-            "message": result["message"],
-            "target": target
-        })
-    
+        if not result.get("success", False):
+            raise HTTPException(status_code=404, detail=result.get("message", "Not found in watchlist"))
+        logger.info("Successfully removed %s from watchlist", target)
+        return JSONResponse({"status": "success", "message": result.get("message", "Removed from watchlist"), "target": target})
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error removing from watchlist: {str(e)}", exc_info=True)
+        logger.error("Error removing from watchlist: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to remove from watchlist: {str(e)}")
 
 # -------------------------------
@@ -245,17 +223,10 @@ async def get_geofences():
     """
     try:
         logger.debug("Fetching geofences")
-        
-        geofences = alert_service.get_geofences()
-        
-        return JSONResponse({
-            "status": "success",
-            "count": len(geofences),
-            "geofences": geofences
-        })
-    
+        geofences = alert_service.get_geofences() or {}
+        return JSONResponse({"status": "success", "count": len(geofences), "geofences": geofences})
     except Exception as e:
-        logger.error(f"Error fetching geofences: {str(e)}", exc_info=True)
+        logger.error("Error fetching geofences: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get geofences: {str(e)}")
 
 # -------------------------------
@@ -265,37 +236,23 @@ async def get_geofences():
 async def create_geofence(geofence: GeofenceCreate):
     """
     Create a new geo-fence zone.
-    
-    **NEW ENDPOINT**
-    
-    Body:
-```json
-    {
-        "zone_name": "School Area",
-        "camera_ids": [1, 2, 3],
-        "description": "Elementary school campus",
-        "enabled": true
-    }
-```
     """
     try:
-        logger.info(f"Creating geofence: {geofence.zone_name} with cameras {geofence.camera_ids}")
-        
+        logger.info("Creating geofence: %s with cameras %s", geofence.zone_name, geofence.camera_ids)
         result = alert_service.create_geofence(
             zone_name=geofence.zone_name,
             camera_ids=geofence.camera_ids,
             description=geofence.description,
             enabled=geofence.enabled
         )
-        
-        if not result["success"]:
-            raise HTTPException(status_code=400, detail=result["message"])
-        
-        logger.info(f"Successfully created geofence: {geofence.zone_name}")
-        
+
+        if not result.get("success", False):
+            raise HTTPException(status_code=400, detail=result.get("message", "Failed to create geofence"))
+
+        logger.info("Successfully created geofence: %s", geofence.zone_name)
         return JSONResponse({
             "status": "success",
-            "message": result["message"],
+            "message": result.get("message", "Geofence created"),
             "zone": {
                 "name": geofence.zone_name,
                 "camera_ids": geofence.camera_ids,
@@ -303,11 +260,11 @@ async def create_geofence(geofence: GeofenceCreate):
                 "enabled": geofence.enabled
             }
         })
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error creating geofence: {str(e)}", exc_info=True)
+        logger.error("Error creating geofence: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create geofence: {str(e)}")
 
 # -------------------------------
@@ -317,34 +274,41 @@ async def create_geofence(geofence: GeofenceCreate):
 async def delete_geofence(zone_name: str):
     """
     Delete a geo-fence zone.
-    
-    **NEW ENDPOINT**
     """
     try:
-        logger.info(f"Deleting geofence: {zone_name}")
-        
-        # Get current geofences
-        geofences = alert_service.get_geofences()
-        
+        logger.info("Deleting geofence: %s", zone_name)
+
+        geofences = alert_service.get_geofences() or {}
         if zone_name not in geofences:
             raise HTTPException(status_code=404, detail=f"Geofence '{zone_name}' not found")
-        
-        # Delete from service (need to add this method to alert_service)
-        # For now, we'll note this as a TODO
-        # TODO: Add delete_geofence method to alert_service
-        
-        logger.info(f"Successfully deleted geofence: {zone_name}")
-        
-        return JSONResponse({
-            "status": "success",
-            "message": f"Geofence '{zone_name}' deleted",
-            "zone_name": zone_name
-        })
-    
+
+        # If alert_service implements delete_geofence, use it
+        if hasattr(alert_service, "delete_geofence"):
+            try:
+                res = alert_service.delete_geofence(zone_name)
+                if not res.get("success", False):
+                    raise HTTPException(status_code=500, detail=res.get("message", "Failed to delete geofence via service"))
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("alert_service.delete_geofence failed: %s", e, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Failed to delete geofence: {str(e)}")
+            logger.info("Successfully deleted geofence via service: %s", zone_name)
+            return JSONResponse({"status": "success", "message": f"Geofence '{zone_name}' deleted", "zone_name": zone_name})
+        else:
+            # Service does not implement deletion - return success but warn user that this was a logical deletion only
+            logger.warning("alert_service.delete_geofence not implemented - returning success response but no service-side deletion performed")
+            return JSONResponse({
+                "status": "success",
+                "message": f"Geofence '{zone_name}' deletion acknowledged (no-op: service delete not implemented)",
+                "zone_name": zone_name,
+                "note": "Implement alert_service.delete_geofence(zone_name) for persistent deletion"
+            })
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting geofence: {str(e)}", exc_info=True)
+        logger.error("Error deleting geofence: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to delete geofence: {str(e)}")
 
 # -------------------------------
@@ -357,17 +321,10 @@ async def get_alert_stats():
     """
     try:
         logger.debug("Fetching alert statistics")
-        
-        stats = alert_service.get_statistics()
-        
-        return JSONResponse({
-            "status": "success",
-            "statistics": stats,
-            "timestamp": datetime.now().isoformat()
-        })
-    
+        stats = alert_service.get_statistics() or {}
+        return JSONResponse({"status": "success", "statistics": stats, "timestamp": datetime.now().isoformat()})
     except Exception as e:
-        logger.error(f"Error fetching statistics: {str(e)}", exc_info=True)
+        logger.error("Error fetching statistics: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get statistics: {str(e)}")
 
 # -------------------------------
@@ -377,36 +334,48 @@ async def get_alert_stats():
 async def acknowledge_alert(ack: AlertAcknowledge):
     """
     Acknowledge an alert (mark as seen/handled).
-    
-    **NEW ENDPOINT**
-    
-    Body:
-```json
-    {
-        "alert_id": "person_1_camera_2_timestamp",
-        "acknowledged_by": "Officer Smith",
-        "notes": "Verified identity, no action needed"
-    }
-```
     """
     try:
-        logger.info(f"Acknowledging alert {ack.alert_id} by {ack.acknowledged_by}")
-        
-        # TODO: Add acknowledge_alert method to alert_service
-        # For now, return success
-        
-        logger.info(f"Successfully acknowledged alert: {ack.alert_id}")
-        
-        return JSONResponse({
-            "status": "success",
-            "message": f"Alert '{ack.alert_id}' acknowledged",
-            "alert_id": ack.alert_id,
-            "acknowledged_by": ack.acknowledged_by,
-            "acknowledged_at": datetime.now().isoformat()
-        })
-    
+        logger.info("Acknowledging alert %s by %s", ack.alert_id, ack.acknowledged_by)
+
+        if hasattr(alert_service, "acknowledge_alert"):
+            try:
+                res = alert_service.acknowledge_alert(
+                    alert_id=ack.alert_id,
+                    acknowledged_by=ack.acknowledged_by,
+                    notes=ack.notes
+                )
+                if not res.get("success", False):
+                    raise HTTPException(status_code=400, detail=res.get("message", "Failed to acknowledge alert"))
+                logger.info("Alert acknowledged via service: %s", ack.alert_id)
+                return JSONResponse({
+                    "status": "success",
+                    "message": res.get("message", f"Alert '{ack.alert_id}' acknowledged"),
+                    "alert_id": ack.alert_id,
+                    "acknowledged_by": ack.acknowledged_by,
+                    "acknowledged_at": datetime.now().isoformat()
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error("alert_service.acknowledge_alert failed: %s", e, exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Failed to acknowledge alert: {str(e)}")
+        else:
+            # Service does not implement acknowledgement - return success but note no persistent change
+            logger.warning("alert_service.acknowledge_alert not implemented - returning success response (no-op)")
+            return JSONResponse({
+                "status": "success",
+                "message": f"Alert '{ack.alert_id}' acknowledged (no-op: service ack not implemented)",
+                "alert_id": ack.alert_id,
+                "acknowledged_by": ack.acknowledged_by,
+                "acknowledged_at": datetime.now().isoformat(),
+                "note": "Implement alert_service.acknowledge_alert for persistent acknowledgements"
+            })
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error acknowledging alert: {str(e)}", exc_info=True)
+        logger.error("Error acknowledging alert: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to acknowledge alert: {str(e)}")
 
 # -------------------------------
@@ -421,56 +390,36 @@ async def export_alerts(
 ):
     """
     Export alerts as downloadable file.
-    
-    **NEW ENDPOINT**
-    
-    Supports JSON format. Future: CSV, PDF
     """
     try:
-        logger.info(f"Exporting alerts: target={target}, priority={priority}, format={format}")
-        
-        # Get alerts
+        logger.info("Exporting alerts: target=%s priority=%s format=%s", target, priority, format)
+        if format != "json":
+            raise HTTPException(status_code=400, detail="Only 'json' format is supported currently")
+
         since = None
         if since_minutes:
             since = datetime.now() - timedelta(minutes=since_minutes)
-        
-        alerts = alert_service.get_alerts(
-            target_name=target,
-            priority=priority,
-            since=since,
-            limit=None  # Get all
-        )
-        
-        # Prepare export data
+
+        alerts = alert_service.get_alerts(target_name=target, priority=priority, since=since, limit=None) or []
+
         export_data = {
             "export_time": datetime.now().isoformat(),
-            "filters": {
-                "target": target,
-                "priority": priority,
-                "since_minutes": since_minutes
-            },
+            "filters": {"target": target, "priority": priority, "since_minutes": since_minutes},
             "count": len(alerts),
             "alerts": alerts
         }
-        
-        # Create file
-        json_bytes = json.dumps(export_data, indent=2).encode('utf-8')
+
+        json_bytes = json.dumps(export_data, indent=2).encode("utf-8")
         file_stream = BytesIO(json_bytes)
-        
         filename = f"alerts_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        logger.info(f"Successfully exported {len(alerts)} alerts to {filename}")
-        
-        return StreamingResponse(
-            file_stream,
-            media_type="application/json",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    
+
+        logger.info("Successfully exported %d alerts to %s", len(alerts), filename)
+        return StreamingResponse(file_stream, media_type="application/json", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error exporting alerts: {str(e)}", exc_info=True)
+        logger.error("Error exporting alerts: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to export alerts: {str(e)}")
 
 # -------------------------------
@@ -482,20 +431,8 @@ async def ping_alerts():
     Health check for alerts service.
     """
     try:
-        # Test alert service availability
         stats = alert_service.get_statistics()
-        
-        return JSONResponse({
-            "status": "ready",
-            "service": "alerts",
-            "timestamp": datetime.now().isoformat(),
-            "stats_available": bool(stats)
-        })
-    
+        return JSONResponse({"status": "ready", "service": "alerts", "timestamp": datetime.now().isoformat(), "stats_available": bool(stats)})
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return JSONResponse({
-            "status": "degraded",
-            "service": "alerts",
-            "error": str(e)
-        }, status_code=503)
+        logger.error("Health check failed: %s", e, exc_info=True)
+        return JSONResponse({"status": "degraded", "service": "alerts", "error": str(e)}, status_code=503)

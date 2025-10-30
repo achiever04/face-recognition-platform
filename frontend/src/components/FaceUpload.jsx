@@ -1,12 +1,16 @@
-// --- IMPROVED: Added useEffect and imported from api.js ---
-import React, { useState, useEffect } from "react";
-// import axios from "axios"; // No longer needed, we use api.js
+// frontend/src/components/FaceUpload.jsx
+import React, { useState, useEffect, useRef } from "react";
+// Use centralized api client
 import {
   uploadFace,
   compareFaces,
   listFaces,
   deleteFace,
-} from "../api"; // Use the central API file
+  uploadWithProgress,
+  enqueueAsyncFaceSearch,
+  pollJob,
+  socket,
+} from "../api";
 
 const FaceUpload = () => {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -22,15 +26,41 @@ const FaceUpload = () => {
   const [enrolledFaces, setEnrolledFaces] = useState([]);
   const [loadingFaces, setLoadingFaces] = useState(false);
 
-  // const backendURL = "http://127.0.0.1:8000"; // No longer needed
+  // --- NEW: Async-upload mode + progress
+  const [useAsyncUpload, setUseAsyncUpload] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [currentJobId, setCurrentJobId] = useState(null);
+  const fileInputRef = useRef(null);
+
+  // small helper: normalize API responses (supports both old axios style and new safeRequest)
+  const normalizeApiResponse = (res) => {
+    // New style: { ok, data, error }
+    if (res && (res.ok === true || res.ok === false)) {
+      return {
+        ok: res.ok,
+        payload: res.data,
+        error: res.error,
+      };
+    }
+    // Legacy axios response: res.data contains payload
+    if (res && res.data !== undefined) {
+      return { ok: true, payload: res.data, error: null };
+    }
+    return { ok: false, payload: null, error: { message: "No response" } };
+  };
 
   // --- NEW: Function to fetch all enrolled faces ---
   const fetchEnrolledFaces = async () => {
     setLoadingFaces(true);
     try {
-      const res = await listFaces(); // from api.js
-      if (res.data.status === "success") {
-        setEnrolledFaces(res.data.targets || []);
+      const res = await listFaces();
+      const { ok, payload } = normalizeApiResponse(res);
+      if (ok && payload) {
+        // Support old and new payload shapes (targets or data.targets)
+        const targets = payload.targets || payload || [];
+        setEnrolledFaces(Array.isArray(targets) ? targets : []);
+      } else {
+        setEnrolledFaces([]);
       }
     } catch (error) {
       console.error("Error fetching faces:", error);
@@ -44,18 +74,61 @@ const FaceUpload = () => {
     fetchEnrolledFaces();
   }, []);
 
+  // --- NEW: Socket listener for async job completion ---
+  useEffect(() => {
+    function onJobFinished(data) {
+      try {
+        // data expected { job_id, result } from backend
+        if (!data || !data.job_id) return;
+        if (currentJobId && data.job_id === currentJobId) {
+          // Normalize result if needed
+          const result = data.result ?? data;
+          setUploadResult(result);
+          setUploading(false);
+          setUploadProgress(100);
+          setCurrentJobId(null);
+          // refresh enrolled faces if detection resulted in new enrollment
+          fetchEnrolledFaces();
+        }
+      } catch (e) {
+        console.warn("Error handling job_finished socket event:", e);
+      }
+    }
+
+    // register only if socket present
+    try {
+      if (socket && socket.on) {
+        socket.on("job_finished", onJobFinished);
+      }
+    } catch (e) {
+      console.warn("Socket attach failed (continuing without socket):", e);
+    }
+
+    return () => {
+      try {
+        if (socket && socket.off) {
+          socket.off("job_finished", onJobFinished);
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+  }, [currentJobId]);
+
   // --- NEW: Function to delete a face ---
   const handleDelete = async (target) => {
     if (!window.confirm(`Are you sure you want to delete ${target}?`)) {
       return;
     }
     try {
-      const res = await deleteFace(target); // from api.js
-      if (res.data.status === "success") {
-        alert(res.data.message);
+      const res = await deleteFace(target);
+      const { ok, payload, error } = normalizeApiResponse(res);
+      if (ok && payload && payload.status === "success") {
+        alert(payload.message);
         fetchEnrolledFaces(); // Re-fetch the list
       } else {
-        alert(`Error: ${res.data.message}`);
+        const msg = payload?.message || error?.message || "Failed to delete";
+        alert(`Error: ${msg}`);
       }
     } catch (error) {
       const errorMsg =
@@ -66,12 +139,13 @@ const FaceUpload = () => {
   };
 
   const handleFileChange = (e) => {
-    setSelectedFile(e.target.files[0]);
+    const f = e.target.files[0];
+    setSelectedFile(f);
     setUploadResult(null);
     setCompareResult(null);
     // --- NEW: Auto-fill target name ---
-    if (e.target.files[0] && !targetName) {
-      setTargetName(e.target.files[0].name);
+    if (f && !targetName) {
+      setTargetName(f.name);
     }
   };
 
@@ -86,50 +160,125 @@ const FaceUpload = () => {
 
     setUploading(true);
     setUploadResult(null);
+    setUploadProgress(0);
 
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
-      // --- NEW: Add target_name and save_raw to FormData ---
       // Use user-provided name, fallback to filename
       formData.append("target_name", targetName || selectedFile.name);
       formData.append("save_raw", saveRaw);
 
-      // --- IMPROVED: Use imported API function ---
-      const uploadRes = await uploadFace(formData);
+      if (useAsyncUpload) {
+        // Enqueue async job using async task manager
+        setUploadProgress(1);
+        const enqueueResp = await enqueueAsyncFaceSearch(formData, (loaded, total) => {
+          const perc = total ? Math.round((loaded / total) * 100) : 0;
+          setUploadProgress(perc);
+        });
 
-      setUploadResult(uploadRes.data);
+        const { ok: enqueuedOk, payload: enqueuePayload, error: enqueueError } =
+          normalizeApiResponse(enqueueResp);
 
-      if (uploadRes.data.status === "success") {
-        alert(`✅ Face encoded for ${uploadRes.data.target}`);
-        fetchEnrolledFaces(); // --- NEW: Refresh list on success
-        // --- NEW: Clear inputs on success ---
-        setSelectedFile(null);
-        setTargetName("");
-        document.getElementById("upload-file-input").value = null; // Clear file input
+        if (!enqueuedOk) {
+          // Enqueue failed
+          const errMsg = enqueueError?.message || "Failed to enqueue job";
+          setUploadResult({ status: "error", message: errMsg });
+          alert(`❌ ${errMsg}`);
+          setUploading(false);
+          return;
+        }
+
+        // Expect job_id from payload (legacy or new)
+        const jobId = enqueuePayload?.job_id || enqueuePayload?.jobId || enqueuePayload?.job || null;
+        if (!jobId) {
+          // If backend immediately returns result, handle it
+          setUploadResult(enqueuePayload);
+          fetchEnrolledFaces();
+          setUploading(false);
+          setUploadProgress(100);
+          return;
+        }
+
+        setCurrentJobId(jobId);
+        // Try to rely on socket event for job completion; if not, poll
+        const pollResp = await pollJob(jobId, {
+          interval: 800,
+          timeout: 120000,
+          onUpdate: (update) => {
+            // update: normalized safeRequest response {ok,data,error}
+            const { ok, payload } = normalizeApiResponse(update);
+            if (ok && payload && payload.status) {
+              // If server supplies progress via payload.status, show it
+              // Not all servers provide this; it's optional
+            }
+          },
+        });
+
+        const { ok: pollOk, payload: pollPayload, error: pollError } = normalizeApiResponse(pollResp);
+        if (!pollOk) {
+          const msg = pollError?.message || "Job polling failed";
+          setUploadResult({ status: "error", message: msg });
+          alert(`❌ ${msg}`);
+        } else {
+          // pollPayload likely contains final job object with status and result
+          setUploadResult(pollPayload);
+          if (pollPayload && (pollPayload.status === "success" || pollPayload.status === "finished")) {
+            // Refresh enrolled faces if applicable
+            fetchEnrolledFaces();
+            // Clear inputs on success
+            setSelectedFile(null);
+            setTargetName("");
+            if (fileInputRef.current) fileInputRef.current.value = null;
+          }
+        }
       } else {
-        // Handle quality warnings from the new endpoint
-        const message =
-          uploadRes.data.status === "warning"
-            ? `${uploadRes.data.message} (Score: ${uploadRes.data.quality_score})`
-            : uploadRes.data.message;
-        alert(`❌ ${message}`);
+        // Synchronous direct upload (legacy)
+        const onProgress = (loaded, total) => {
+          const perc = total ? Math.round((loaded / total) * 100) : 0;
+          setUploadProgress(perc);
+        };
+        const resp = await uploadWithProgress("/face/upload", formData, onProgress);
+        const { ok, payload, error } = normalizeApiResponse(resp);
+
+        if (ok && payload) {
+          // payload expected to have { status: "success"|"warning"|"error", ... }
+          setUploadResult(payload);
+          if (payload.status === "success") {
+            alert(`✅ Face encoded for ${payload.target}`);
+            fetchEnrolledFaces();
+            // Clear inputs on success
+            setSelectedFile(null);
+            setTargetName("");
+            if (fileInputRef.current) fileInputRef.current.value = null;
+          } else {
+            const message = payload.message || "Upload returned warning/error";
+            alert(`❌ ${message}`);
+          }
+        } else {
+          const msg = (error && error.message) || "Upload failed";
+          setUploadResult({ status: "error", message: msg });
+          alert(`❌ ${msg}`);
+        }
       }
     } catch (error) {
       console.error(error);
-      // Handle detailed errors from the new endpoint
-      const errorMsg =
-        error.response?.data?.detail ||
-        error.response?.data?.message ||
+      // Support axios-style errors and normalized errors
+      const errMsg =
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        error?.message ||
         "Something went wrong!";
       setUploadResult({
         status: "error",
-        message: errorMsg,
+        message: errMsg,
       });
-      alert(`❌ ${errorMsg}`);
+      alert(`❌ ${errMsg}`);
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+      setCurrentJobId(null);
     }
-
-    setUploading(false);
   };
 
   // --- UPGRADED: handleCompare ---
@@ -143,24 +292,30 @@ const FaceUpload = () => {
     formData.append("file", compareFile);
 
     try {
-      // --- IMPROVED: Use imported API function ---
       const res = await compareFaces(formData);
-
-      setCompareResult(res.data);
+      const { ok, payload, error } = normalizeApiResponse(res);
+      if (ok) {
+        setCompareResult(payload);
+      } else {
+        const message = error?.message || "Comparison failed!";
+        setCompareResult({ status: "error", message });
+        alert(`❌ ${message}`);
+      }
     } catch (error) {
       console.error(error);
       const errorMsg =
-        error.response?.data?.detail ||
-        error.response?.data?.message ||
+        error?.response?.data?.detail ||
+        error?.response?.data?.message ||
+        error?.message ||
         "Comparison failed!";
       setCompareResult({
         status: "error",
         message: errorMsg,
       });
       alert(`❌ ${errorMsg}`);
+    } finally {
+      setComparing(false);
     }
-
-    setComparing(false);
   };
 
   return (
@@ -178,13 +333,14 @@ const FaceUpload = () => {
       >
         <h3>Step 1: Upload & Encode Face</h3>
         <input
-          id="upload-file-input" // --- NEW: Added id to allow clearing
+          id="upload-file-input"
+          ref={fileInputRef}
           type="file"
           accept="image/*"
           onChange={handleFileChange}
           style={{ marginBottom: "10px" }}
         />
-        {/* --- NEW: Target Name Input --- */}
+        {/* Target Name Input */}
         <input
           type="text"
           placeholder="Enter Target Name (defaults to filename)"
@@ -192,12 +348,12 @@ const FaceUpload = () => {
           onChange={(e) => setTargetName(e.target.value)}
           style={{
             marginBottom: "10px",
-            width: "calc(100% - 16px)", // Fix width
+            width: "calc(100% - 16px)",
             padding: "8px",
-            boxSizing: "border-box", // Fix box model
+            boxSizing: "border-box",
           }}
         />
-        {/* --- NEW: Save Raw Checkbox --- */}
+        {/* Save Raw Checkbox */}
         <label style={{ marginBottom: "10px", display: "block" }}>
           <input
             type="checkbox"
@@ -206,6 +362,17 @@ const FaceUpload = () => {
             style={{ marginRight: "5px" }}
           />
           Save Raw Image on Server
+        </label>
+
+        {/* Async Upload Toggle */}
+        <label style={{ marginBottom: "10px", display: "block" }}>
+          <input
+            type="checkbox"
+            checked={useAsyncUpload}
+            onChange={(e) => setUseAsyncUpload(e.target.checked)}
+            style={{ marginRight: "5px" }}
+          />
+          Use Async Upload (enqueue job and process in background)
         </label>
 
         <button
@@ -223,6 +390,31 @@ const FaceUpload = () => {
           {uploading ? "Uploading..." : "Upload & Encode"}
         </button>
 
+        {/* Progress bar */}
+        {uploading && (
+          <div style={{ marginTop: "10px" }}>
+            <div
+              style={{
+                height: "10px",
+                background: "#eee",
+                borderRadius: "6px",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "10px",
+                  width: `${uploadProgress}%`,
+                  background: "#4caf50",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: "12px", marginTop: "6px" }}>
+              {uploadProgress}% complete
+            </div>
+          </div>
+        )}
+
         {uploadResult && (
           <div
             style={{
@@ -237,12 +429,11 @@ const FaceUpload = () => {
             }}
           >
             <h4>Upload Result:</h4>
-            {/* --- NEW: Better display for quality warnings --- */}
             {uploadResult.status === "warning" && (
               <p style={{ color: "#856404", fontWeight: "bold" }}>
                 {uploadResult.message} (Score: {uploadResult.quality_score})
                 <br />
-                Issues: {uploadResult.issues.join(", ")}
+                Issues: {uploadResult.issues && uploadResult.issues.join(", ")}
               </p>
             )}
             <pre
@@ -317,19 +508,13 @@ const FaceUpload = () => {
                   >
                     <thead>
                       <tr style={{ backgroundColor: "#f0f0f0" }}>
-                        <th
-                          style={{ padding: "8px", border: "1px solid #ddd" }}
-                        >
+                        <th style={{ padding: "8px", border: "1px solid #ddd" }}>
                           Target
                         </th>
-                        <th
-                          style={{ padding: "8px", border: "1px solid #ddd" }}
-                        >
+                        <th style={{ padding: "8px", border: "1px solid #ddd" }}>
                           Match
                         </th>
-                        <th
-                          style={{ padding: "8px", border: "1.px solid #ddd" }}
-                        >
+                        <th style={{ padding: "8px", border: "1px solid #ddd" }}>
                           Distance
                         </th>
                       </tr>
@@ -337,9 +522,7 @@ const FaceUpload = () => {
                     <tbody>
                       {compareResult.comparisons.map((comp, idx) => (
                         <tr key={idx}>
-                          <td
-                            style={{ padding: "8px", border: "1px solid #ddd" }}
-                          >
+                          <td style={{ padding: "8px", border: "1px solid #ddd" }}>
                             {comp.target}
                           </td>
                           <td
@@ -352,10 +535,10 @@ const FaceUpload = () => {
                           >
                             {comp.match ? "✓ Yes" : "✗ No"}
                           </td>
-                          <td
-                            style={{ padding: "8px", border: "1px solid #ddd" }}
-                          >
-                            {comp.distance.toFixed(3)}
+                          <td style={{ padding: "8px", border: "1px solid #ddd" }}>
+                            {typeof comp.distance === "number"
+                              ? comp.distance.toFixed(3)
+                              : comp.distance}
                           </td>
                         </tr>
                       ))}
@@ -378,7 +561,7 @@ const FaceUpload = () => {
         )}
       </div>
 
-      {/* --- NEW: Step 3 - Manage Enrolled Faces --- */}
+      {/* Step 3 - Manage Enrolled Faces */}
       <div
         style={{
           marginTop: "30px",
