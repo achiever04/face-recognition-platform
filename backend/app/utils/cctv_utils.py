@@ -17,21 +17,22 @@ import logging
 from pathlib import Path
 
 import cv2
+import numpy as np
 from app.utils.deepfake_utils import DeepfakeDetector
 
 logger = logging.getLogger(__name__)
 
 
 class CCTVProcessor:
-    def __init__(self, camera_sources: List[int]):
+    def __init__(self, camera_sources: List[Any]):
         """
         Args:
             camera_sources: list of camera source identifiers (device index ints or stream URLs)
         """
-        self.camera_sources: List[int] = camera_sources
+        self.camera_sources: List[Any] = camera_sources
         self.detector = DeepfakeDetector()
-        self.captures: List[Tuple[int, Optional[cv2.VideoCapture]]] = []
-        self.frame_counters: Dict[int, int] = {}
+        self.captures: List[Tuple[Any, Optional[cv2.VideoCapture]]] = []
+        self.frame_counters: Dict[Any, int] = {}
 
         # Initialize captures with error handling
         for src in self.camera_sources:
@@ -49,7 +50,7 @@ class CCTVProcessor:
                 self.captures.append((src, None))
                 logger.exception("Error initializing camera %s: %s", src, e)
 
-    def process_frame(self, frame: "np.ndarray", camera_id: int) -> List[Dict[str, Any]]:
+    def process_frame(self, frame: "np.ndarray", camera_id: Any) -> List[Dict[str, Any]]:
         """
         Process a single frame from a camera:
           - Detect faces using the detector
@@ -76,7 +77,7 @@ class CCTVProcessor:
 
         return detections
 
-    def run(self, max_frames: Optional[int] = None) -> Iterator[Tuple[int, "np.ndarray", List[Dict[str, Any]]]]:
+    def run(self, max_frames: Optional[int] = None) -> Iterator[Tuple[Any, "np.ndarray", List[Dict[str, Any]]]]:
         """
         Iterate over configured cameras and yield processed frames.
 

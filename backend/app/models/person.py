@@ -3,7 +3,8 @@
 from __future__ import annotations
 from typing import List, Tuple, Optional, Any, Dict
 from datetime import datetime
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
+from pydantic import core_schema, GetCoreSchemaHandler
 from bson import ObjectId
 
 # ---------------------------------------------------------
@@ -13,22 +14,14 @@ class PyObjectId(ObjectId):
     """Wrapper to allow Pydantic models to accept/encode MongoDB ObjectId."""
 
     @classmethod
-    def __get_validators__(cls):
-        yield cls.validate
-
-    @classmethod
-    def validate(cls, v: Any) -> ObjectId:
-        """
-        Accepts:
-          - ObjectId instance
-          - hex string representation of an ObjectId
-        Raises ValueError if invalid.
-        """
-        if isinstance(v, ObjectId):
-            return v
-        if isinstance(v, str) and ObjectId.is_valid(v):
-            return ObjectId(v)
-        raise ValueError("Invalid ObjectId")
+    def __get_pydantic_core_schema__(cls, source_type, handler: GetCoreSchemaHandler):
+        def validate_objectid(v, info):
+            if isinstance(v, ObjectId):
+                return v
+            if isinstance(v, str) and ObjectId.is_valid(v):
+                return ObjectId(v)
+            raise ValueError("Invalid ObjectId")
+        return core_schema.no_info_plain_validator(validate_objectid)
 
     @classmethod
     def __modify_schema__(cls, field_schema: Dict[str, Any]) -> None:
@@ -53,17 +46,18 @@ class FaceModel(BaseModel):
     embedding: str = Field(..., description="Serialized (e.g., base64) embedding for the face")
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp (UTC)")
 
-    @validator("target")
+    @field_validator("target")
     def non_empty_target(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("target must be a non-empty string")
         return v.strip()
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
-        schema_extra = {
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()},
+        # keep schema examples in a backward compatible place
+        "json_schema_extra": {
             "example": {
                 "_id": "654f9f6b1a2b3c4d5e6f7890",
                 "target": "person_image.jpg",
@@ -71,6 +65,7 @@ class FaceModel(BaseModel):
                 "updated_at": "2025-10-26T12:00:00.000Z"
             }
         }
+    }
 
 
 # ---------------------------------------------------------
@@ -98,14 +93,14 @@ class TrackingRecordModel(BaseModel):
     confidence: str = Field(..., description="Confidence level (high/medium/low)")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Detection timestamp (UTC)")
 
-    @validator("person", "camera_name")
+    @field_validator("person", "camera_name")
     def non_empty_str(cls, v: str) -> str:
         s = v.strip()
         if not s:
             raise ValueError("must be a non-empty string")
         return s
 
-    @validator("geo")
+    @field_validator("geo")
     def geo_shape_and_range(cls, v: Tuple[float, float]) -> Tuple[float, float]:
         if not (isinstance(v, (list, tuple)) and len(v) == 2):
             raise ValueError("geo must be a tuple/list of (lat, lon)")
@@ -114,7 +109,7 @@ class TrackingRecordModel(BaseModel):
             raise ValueError("geo coordinates out of range")
         return lat, lon
 
-    @validator("confidence")
+    @field_validator("confidence")
     def validate_confidence(cls, v: str) -> str:
         allowed = {"high", "medium", "low"}
         val = v.strip().lower()
@@ -122,7 +117,7 @@ class TrackingRecordModel(BaseModel):
             raise ValueError(f"confidence must be one of {allowed}")
         return val
 
-    @validator("timestamp", pre=True)
+    @field_validator("timestamp", mode="before")
     def parse_timestamp(cls, v: Any) -> datetime:
         """
         Accept either:
@@ -139,11 +134,11 @@ class TrackingRecordModel(BaseModel):
                 raise ValueError("timestamp must be a datetime or ISO formatted string")
         raise ValueError("timestamp must be a datetime or ISO formatted string")
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
-        schema_extra = {
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()},
+        "json_schema_extra": {
             "example": {
                 "_id": "654f9f6b1a2b3c4d5e6f7891",
                 "person": "person_image.jpg",
@@ -155,6 +150,7 @@ class TrackingRecordModel(BaseModel):
                 "timestamp": "2025-10-26T12:05:30.123Z"
             }
         }
+    }
 
 
 # ---------------------------------------------------------
@@ -174,7 +170,7 @@ class AlertLogModel(BaseModel):
     distance: float = Field(..., description="Matching distance")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Event timestamp (UTC)")
 
-    @validator("geo", pre=True)
+    @field_validator("geo", mode="before")
     def geo_to_string(cls, v: Any) -> str:
         """
         Convert (lat, lon) tuple to string if necessary, otherwise accept strings.
@@ -190,7 +186,7 @@ class AlertLogModel(BaseModel):
             return v
         raise ValueError("geo must be a string or a (lat, lon) tuple/list")
 
-    @validator("timestamp", pre=True)
+    @field_validator("timestamp", mode="before")
     def parse_ts(cls, v: Any) -> datetime:
         if isinstance(v, datetime):
             return v
@@ -201,10 +197,11 @@ class AlertLogModel(BaseModel):
                 raise ValueError("timestamp must be ISO formatted string or datetime")
         raise ValueError("timestamp must be ISO formatted string or datetime")
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()}
+    }
 
 
 # ---------------------------------------------------------
@@ -224,13 +221,13 @@ class DeepfakeLogModel(BaseModel):
     bbox: List[int] = Field(..., description="[x1, y1, x2, y2]")
     timestamp: datetime = Field(default_factory=datetime.utcnow, description="Event timestamp (UTC)")
 
-    @validator("bbox")
+    @field_validator("bbox")
     def bbox_shape(cls, v: List[int]) -> List[int]:
         if not (isinstance(v, (list, tuple)) and len(v) == 4):
             raise ValueError("bbox must be a list/tuple of 4 integers: [x1,y1,x2,y2]")
         return [int(x) for x in v]
 
-    @validator("timestamp", pre=True)
+    @field_validator("timestamp", mode="before")
     def parse_ts2(cls, v: Any) -> datetime:
         if isinstance(v, datetime):
             return v
@@ -241,10 +238,11 @@ class DeepfakeLogModel(BaseModel):
                 raise ValueError("timestamp must be ISO formatted string or datetime")
         raise ValueError("timestamp must be ISO formatted string or datetime")
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()}
+    }
 
 
 # ---------------------------------------------------------
@@ -264,18 +262,18 @@ class ConfigModel(BaseModel):
     data: dict = Field(..., description="Configuration payload (list/dict)")
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time (UTC)")
 
-    @validator("name")
+    @field_validator("name")
     def name_not_empty(cls, v: str) -> str:
         s = v.strip()
         if not s:
             raise ValueError("name must be a non-empty string")
         return s
 
-    class Config:
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: str, datetime: lambda v: v.isoformat()}
-        schema_extra = {
+    model_config = {
+        "populate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: str, datetime: lambda v: v.isoformat()},
+        "json_schema_extra": {
             "example": {
                 "_id": "654f9f6b1a2b3c4d5e6f7892",
                 "name": "watchlist",
@@ -283,3 +281,4 @@ class ConfigModel(BaseModel):
                 "updated_at": "2025-10-26T12:00:00.000Z"
             }
         }
+    }

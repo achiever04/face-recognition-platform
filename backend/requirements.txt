@@ -4,7 +4,7 @@
 # Web / API
 fastapi==0.116.1
 uvicorn==0.35.0
-starlette==0.47.3
+starlette==0.27.0
 
 # Validation / env
 pydantic==2.11.7

@@ -18,12 +18,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app/backend
 
 # Copy requirements and install
-COPY backend/requirements.txt /app/backend/requirements.txt
+# NOTE: build context is ./backend so requirements.txt exists at the root of the context
+COPY requirements.txt /app/backend/requirements.txt
+
 RUN pip install --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -r /app/backend/requirements.txt
 
-# Copy application
-COPY backend /app/backend
+# Copy application (copy entire build context into /app/backend)
+COPY . /app/backend
 
 # Create required runtime directories
 RUN mkdir -p /app/backend/data/uploads /app/backend/data/fl_weights /app/backend/data/models

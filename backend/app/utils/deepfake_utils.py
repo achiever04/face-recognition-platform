@@ -39,12 +39,15 @@ class DeepfakeDetector:
             from insightface.app import FaceAnalysis  # type: ignore
             # Attempt to prepare with CPU provider first; if GPU desired, the user can adjust instantiation externally
             self.face_app = FaceAnalysis(providers=['CPUExecutionProvider'])
-            # prepare may require ctx_id; for CPU we use -1 or default behavior
+            # prepare may require ctx_id; for CPU we use default behavior; attempt a couple of variants
             try:
                 self.face_app.prepare(ctx_id=0, det_size=(640, 640))
             except Exception:
                 # Fall back to default prepare invocation if ctx_id fails
-                self.face_app.prepare(det_size=(640, 640))
+                try:
+                    self.face_app.prepare(det_size=(640, 640))
+                except Exception:
+                    logger.exception("InsightFace prepare failed with both ctx_id and default prepare")
             logger.info("InsightFace FaceAnalysis (RetinaFace) loaded successfully.")
         except Exception as e:
             logger.warning("InsightFace/RetinaFace initialization failed: %s. Falling back to OpenCV detection.", e)
@@ -66,7 +69,10 @@ class DeepfakeDetector:
                         model.classifier[last_idx] = torch.nn.Linear(in_features=in_features, out_features=2)
                     else:
                         # As a fallback, append a new Linear layer
-                        model.classifier.add_module("fc_out", torch.nn.Linear(1024, 2))
+                        try:
+                            model.classifier.add_module("fc_out", torch.nn.Linear(1024, 2))
+                        except Exception:
+                            logger.debug("Could not append fc_out to classifier; continuing with best-effort modification.")
                 else:
                     # If classifier shape is unexpected, try to set an attribute safely
                     try:
