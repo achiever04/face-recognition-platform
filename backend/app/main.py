@@ -41,17 +41,13 @@ logger = logging.getLogger("app.main")
 # --- FastAPI app creation ---
 api = FastAPI(title="Multi-Camera Face Recognition Platform")
 
-# --- Socket.IO server ---
-# Use the shared AsyncManager from app.state for cross-module emission support
-sio = socketio.AsyncServer(async_mode="asgi", client_manager=SIO_MANAGER)
-# Note: We'll wrap the FastAPI app into a Socket.IO ASGIApp at the end (same behavior as before)
-
 # --- CORS configuration (configurable via env) ---
 _frontend_origins = os.getenv("FRONTEND_ORIGINS", "*")
 if _frontend_origins and _frontend_origins != "*":
     # allow comma-separated origins
     allow_origins = [o.strip() for o in _frontend_origins.split(",") if o.strip()]
 else:
+    # if wildcard, pass "*" which is accepted by both CORSMiddleware and socketio
     allow_origins = ["*"]
 
 api.add_middleware(
@@ -60,6 +56,15 @@ api.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# --- Socket.IO server ---
+# Use the shared AsyncManager from app.state for cross-module emission support
+# Important: provide cors_allowed_origins so engineio/socketio handshake allows frontends
+sio = socketio.AsyncServer(
+    async_mode="asgi",
+    client_manager=SIO_MANAGER,
+    cors_allowed_origins=allow_origins,  # allow same origins as FastAPI CORS
 )
 
 # --- Ensure upload directory exists ---
@@ -119,10 +124,45 @@ def camera_status():
     return {"status": status}
 
 # --- Socket.IO event handlers (preserve your existing handlers) ---
+# Improved connect handler: check origin header and allow only configured origins (or "*")
 @sio.event
-async def connect(sid, environ):
-    """Handle new client connection."""
-    print(f"[Socket.IO] Client connected: {sid}")
+async def connect(sid, environ, auth=None):
+    """
+    Handle new client connection with tolerant origin checking.
+
+    We normalize localhost <-> 127.0.0.1 (and strip trailing slash) so browser
+    origin variations do not cause a 403 during the Socket.IO handshake.
+    """
+    # Try common header locations for origin
+    origin = environ.get("HTTP_ORIGIN") or environ.get("origin") or ""
+    # Normalize common host differences (localhost vs 127.0.0.1)
+    orig_norm = origin.replace("http://localhost", "http://127.0.0.1").replace(
+        "https://localhost", "https://127.0.0.1"
+    ).rstrip("/")
+
+    # Normalize the allow_origins configured earlier
+    allowed_norm = [
+        o.replace("http://localhost", "http://127.0.0.1")
+         .replace("https://localhost", "https://127.0.0.1")
+         .rstrip("/")
+        for o in allow_origins
+    ]
+
+    # If allow_origins is not a wildcard and origin is present, enforce membership
+    if allowed_norm and "*" not in allowed_norm and orig_norm:
+        if orig_norm not in allowed_norm:
+            logger.warning(
+                "Socket connection rejected from origin=%s not in allow_origins=%s",
+                origin,
+                allow_origins,
+            )
+            # refuse connection; Socket.IO will return 403/connection refused
+            raise ConnectionRefusedError("origin not allowed")
+
+    # Accepted
+    print(f"[Socket.IO] Client connected: {sid} origin={origin}")
+    return True
+
 
 @sio.event
 async def disconnect(sid):

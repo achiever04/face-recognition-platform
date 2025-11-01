@@ -41,10 +41,11 @@ if not logger.handlers:
     formatter = logging.Formatter("[DB] %(asctime)s %(levelname)s: %(message)s")
     ch.setFormatter(formatter)
     logger.addHandler(ch)
+# Prefer explicit DB_LOG_LEVEL env var for this module; fallback to INFO
 logger.setLevel(os.getenv("DB_LOG_LEVEL", "INFO").upper())
 
 # -------------------------------
-# MongoDB connection (singleton)
+# MongoDB connection (singleton) configuration
 # -------------------------------
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "face_recognition_db")
@@ -53,7 +54,33 @@ _MONGO_CONNECT_BACKOFF = float(os.getenv("MONGO_CONNECT_BACKOFF", "2.0"))  # sec
 
 _client: Optional[MongoClient] = None
 
+# -------------------------------
+# Index creation (idempotent)
+# -------------------------------
+def ensure_indexes(db_handle):
+    """Create indexes in an idempotent way."""
+    try:
+        # Use explicit index names so re-running is predictable; if an index with
+        # same key but different name already exists MongoDB will raise OperationFailure.
+        # We catch and log exceptions but do not treat as fatal.
+        db_handle["logs"].create_index(
+            [("target", ASCENDING), ("camera_id", ASCENDING), ("timestamp", ASCENDING)],
+            name="idx_logs_target_camera_timestamp",
+        )
+        db_handle["deepfakes"].create_index(
+            [("camera_id", ASCENDING), ("timestamp", ASCENDING)], name="idx_deepfakes_camera_timestamp"
+        )
+        db_handle["tracking"].create_index(
+            [("person", ASCENDING), ("timestamp", DESCENDING)], name="idx_tracking_person_timestamp"
+        )
+        db_handle["config"].create_index("name", unique=True, name="idx_config_name_unique")
+        logger.info("Ensured database indexes.")
+    except Exception:
+        logger.exception("Failed to ensure indexes (non-fatal)")
 
+# -------------------------------
+# Mongo client/get_db functions
+# -------------------------------
 def get_mongo_client(max_retries: int = _MONGO_CONNECT_RETRIES) -> MongoClient:
     """
     Return a global MongoClient, connecting with retries.
@@ -75,7 +102,11 @@ def get_mongo_client(max_retries: int = _MONGO_CONNECT_RETRIES) -> MongoClient:
             _client = client
             logger.info("MongoDB connection successful (db=%s)", MONGO_DB_NAME)
             # Ensure indexes are created (idempotent)
-            ensure_indexes(client[MONGO_DB_NAME])
+            try:
+                ensure_indexes(client[MONGO_DB_NAME])
+            except Exception:
+                # ensure_indexes already logs; don't fail connection for index issues
+                logger.debug("ensure_indexes raised while connecting (continuing).")
             return _client
         except Exception as e:
             last_exc = e
@@ -120,6 +151,7 @@ def get_collection(name: str):
 # -------------------------------
 # Collections & directories (setup)
 # -------------------------------
+# Defer acquiring DB handle until after get_mongo_client and ensure_indexes definitions
 db = get_db()
 faces_collection = db["faces"]
 logs_collection = db["logs"]
@@ -235,21 +267,10 @@ def decrypt_embedding(encrypted_str: str) -> List[float]:
         return []
 
 # -------------------------------
-# Index creation (idempotent)
-# -------------------------------
-def ensure_indexes(db_handle):
-    """Create indexes in an idempotent way."""
-    try:
-        db_handle["logs"].create_index([("target", ASCENDING), ("camera_id", ASCENDING), ("timestamp", ASCENDING)])
-        db_handle["deepfakes"].create_index([("camera_id", ASCENDING), ("timestamp", ASCENDING)])
-        db_handle["tracking"].create_index([("person", ASCENDING), ("timestamp", DESCENDING)])
-        db_handle["config"].create_index("name", unique=True)
-        logger.info("Ensured database indexes.")
-    except Exception:
-        logger.exception("Failed to ensure indexes (non-fatal)")
-
 # call ensure_indexes once (safe)
+# -------------------------------
 try:
+    # ensure_indexes is idempotent; calling on the already acquired db is safe
     ensure_indexes(db)
 except Exception:
     logger.exception("Index creation encountered an error at startup")

@@ -5,21 +5,20 @@ import { io } from "socket.io-client";
 /* ===========================
    Environment / Configuration
    =========================== */
+// Prefer Vite env (import.meta.env) — do not use `process` in browser bundles
 const VITE_BASE =
-  typeof import.meta !== "undefined" && import.meta.env ? import.meta.env.VITE_API_BASE : undefined;
-const REACT_BASE = process.env.REACT_APP_API_BASE;
-const BASE_URL = VITE_BASE || REACT_BASE || "http://127.0.0.1:8000";
+  typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE
+    ? import.meta.env.VITE_API_BASE
+    : undefined;
+
+const BASE_URL = VITE_BASE || "http://127.0.0.1:8000";
 
 const TIMEOUT_MS = Number(
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_TIMEOUT_MS) ||
-    process.env.REACT_APP_API_TIMEOUT_MS ||
-    12000
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_TIMEOUT_MS) || 12000
 );
 
 const MAX_RETRIES = Number(
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_MAX_RETRIES) ||
-    process.env.REACT_APP_API_MAX_RETRIES ||
-    2
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_MAX_RETRIES) || 2
 );
 
 const RETRY_BASE_DELAY_MS = 300;
@@ -124,10 +123,12 @@ function makeCancelable() {
 /* ===========================
    Socket.IO (single shared factory)
    =========================== */
+// Replace your createSocket function with this block in frontend/src/api.js
 let socket = null;
-function createSocket({ path = "/", query = {}, authToken = null, reconnectionAttempts = 5 } = {}) {
+function createSocket({ path = "/socket.io", query = {}, authToken = null, reconnectionAttempts = 5 } = {}) {
   if (socket && socket.connected) return socket;
 
+  // Guard localStorage access
   if (!authToken) {
     try {
       authToken = localStorage.getItem("auth_token");
@@ -136,9 +137,12 @@ function createSocket({ path = "/", query = {}, authToken = null, reconnectionAt
     }
   }
 
+  // Normalize BASE_URL: remove trailing slash if present
+  const base = (BASE_URL || "").replace(/\/+$/, "");
+
   const opts = {
-    path,
-    transports: ["websocket", "polling"],
+    path, // ensure server and client agree on /socket.io
+    transports: ["websocket"], // prefer websocket only (avoid polling fallbacks)
     reconnection: true,
     reconnectionAttempts,
     autoConnect: true,
@@ -146,7 +150,8 @@ function createSocket({ path = "/", query = {}, authToken = null, reconnectionAt
     query,
   };
 
-  socket = io(BASE_URL, opts);
+  // When backend is on a different origin, pass full url
+  socket = io(base, opts);
 
   socket.on("connect", () => {
     console.info("[socket] connected", socket.id);
@@ -161,6 +166,8 @@ function createSocket({ path = "/", query = {}, authToken = null, reconnectionAt
   return socket;
 }
 
+
+// create a default socket instance (keeps previous behavior)
 const defaultSocket = createSocket();
 export { defaultSocket as socket, createSocket };
 
@@ -202,8 +209,7 @@ export const getTrackingStats = () => safeRequest(API.get("/camera/stats"));
 export const getPersonMovement = (personName, limit = 20) =>
   safeRequest(API.get(`/camera/movement/${encodeURIComponent(personName)}`, { params: { limit } }));
 
-export const analyzePatterns = (personName) =>
-  safeRequest(API.get(`/camera/analyze/${encodeURIComponent(personName)}`));
+export const analyzePatterns = (personName) => safeRequest(API.get(`/camera/analyze/${encodeURIComponent(personName)}`));
 
 /* Federated Learning */
 export const getFederatedStatus = (clientId) =>
@@ -228,12 +234,6 @@ export const aggregateWeights = (clientIds = null, newVersion = 1) =>
       { headers: { "Content-Type": "application/json" } }
     )
   );
-
-export const getAggregatedModel = () => safeRequest(API.get("/face/fl/aggregated_model"));
-
-/* Deepfake Detection */
-export const detectDeepfake = (formData) =>
-  safeRequest(API.post("/deepfake/detect", formData, { headers: { "Content-Type": "multipart/form-data" } }));
 
 export const detectDeepfakeImage = (formData) =>
   safeRequest(API.post("/deepfake/detect-image", formData, { headers: { "Content-Type": "multipart/form-data" } }));
@@ -311,6 +311,10 @@ export async function pollJob(jobId, { interval = 800, timeout = 60000, onUpdate
     await new Promise((r) => setTimeout(r, interval));
   }
 }
+
+/* Backwards-compatible alias expected by older UI code */
+export const getAggregatedModel = (clientIds = null, newVersion = 1) =>
+  aggregateWeights(clientIds, newVersion);
 
 /* Backwards-compatible default export */
 export default API;

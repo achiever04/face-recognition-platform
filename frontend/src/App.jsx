@@ -47,7 +47,11 @@ function App() {
   const [aggregatedModel, setAggregatedModel] = useState(null);
 
   // Backend base (single source of truth, can be overridden by env var)
-  const BACKEND_BASE = process.env.REACT_APP_BACKEND_URL || "http://127.0.0.1:8000";
+  const BACKEND_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_BACKEND_URL) ||
+  (typeof process !== "undefined" && process.env ? process.env.REACT_APP_BACKEND_URL : undefined) ||
+  "http://127.0.0.1:8000";
+
 
   // ------------------------
   // Poll / refresh camera status
