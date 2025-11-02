@@ -320,6 +320,41 @@ class AlertService:
                 filtered = filtered[:limit]
             return filtered
 
+    # Add to backend/app/services/alert_service.py after get_alerts method
+
+def count_alerts(self, target_name: Optional[str] = None, priority: Optional[str] = None, since: Optional[datetime] = None) -> int:
+    """Count alerts matching filters (for pagination)"""
+    with self._lock:
+        all_alerts_flat = [a for history_deque in self.alert_history.values() for a in history_deque]
+        
+        filtered = all_alerts_flat
+        if target_name:
+            filtered = [a for a in filtered if a["target"] == target_name]
+        if priority:
+            filtered = [a for a in filtered if a["priority"] == priority]
+        if since:
+            filtered = [a for a in filtered if datetime.fromisoformat(a["timestamp"]) > since]
+        
+        return len(filtered)
+
+def acknowledge_alert(self, alert_id: str, acknowledged_by: str, notes: Optional[str] = None) -> Dict[str, Any]:
+    """Acknowledge an alert (mark as seen)"""
+    # Implementation for alert acknowledgement
+    with self._lock:
+        # Search for alert in history
+        for person, history_deque in self.alert_history.items():
+            for alert in history_deque:
+                if alert.get("alert_id") == alert_id:
+                    alert["acknowledged"] = True
+                    alert["acknowledged_by"] = acknowledged_by
+                    alert["acknowledged_at"] = datetime.now().isoformat()
+                    if notes:
+                        alert["acknowledgement_notes"] = notes
+                    logger.info("Alert %s acknowledged by %s", alert_id, acknowledged_by)
+                    return {"success": True, "message": f"Alert {alert_id} acknowledged"}
+        
+        return {"success": False, "message": f"Alert {alert_id} not found"}
+
     def get_latest_alert(self, target_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         alerts = self.get_alerts(target_name=target_name, limit=1)
         return alerts[0] if alerts else None
