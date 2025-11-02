@@ -528,6 +528,35 @@ def load_geofences_db() -> Dict[str, Any]:
         logger.exception("Failed to load geofences")
         return {}
 
+# Add to backend/app/utils/db.py after line 520
+
+def save_detection_to_db(detection: Dict[str, Any]):
+    """Save tracking detection to database (already exists, keeping as-is)"""
+    try:
+        if isinstance(detection.get("geo"), tuple):
+            detection["geo"] = list(detection["geo"])
+        if "timestamp" not in detection:
+            detection["timestamp"] = iso_now()
+        _safe_insert(tracking_collection, detection)
+    except Exception:
+        logger.exception("Failed to save tracking detection")
+
+# NEW: Add count helpers for alert_service
+def count_alerts_db(target_name: Optional[str] = None, priority: Optional[str] = None, since: Optional[datetime] = None) -> int:
+    """Count alerts matching filters"""
+    try:
+        query = {}
+        if target_name:
+            query["target"] = target_name
+        if priority:
+            query["priority"] = priority
+        if since:
+            query["timestamp"] = {"$gte": since.isoformat()}
+        return logs_collection.count_documents(query)
+    except Exception:
+        logger.exception("Failed to count alerts")
+        return 0
+
 # -------------------------------
 # Tracking persistence (preserve API)
 # -------------------------------
