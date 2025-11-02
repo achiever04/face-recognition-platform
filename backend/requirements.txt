@@ -1,120 +1,78 @@
 
-PHASE 1: BACKEND DEPENDENCIES & ENVIRONMENT
-File 1: backend/requirements.txt
 # backend/requirements.txt - FIXED VERSIONS FOR UBUNTU 22.04 + PYTHON 3.10
 
-============================================
-SYSTEM PACKAGES NEEDED (APT)
-============================================
-Run before pip install:
+# Run before pip install:
 sudo apt-get update
 sudo apt-get install -y build-essential cmake pkg-config
 sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 libsm6 libxrender1 libxext6
 sudo apt-get install -y ffmpeg
 sudo apt-get install -y libhdf5-dev  # For some ML packages
-============================================
-CORE WEB FRAMEWORK
-============================================
+
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 starlette==0.40.0  # Compatible with fastapi 0.115.0
-============================================
-DATA VALIDATION & ENVIRONMENT
-============================================
+
 pydantic==2.9.2
 pydantic-core==2.23.4
 python-dotenv==1.0.1
-============================================
-DATABASE
-============================================
+
 pymongo==4.8.0
 dnspython==2.6.1  # Required for MongoDB SRV connections
-============================================
-FILE UPLOADS
-============================================
+
 python-multipart==0.0.12
-============================================
-SCIENTIFIC COMPUTING STACK
-============================================
+
 numpy==1.26.4  # Stable version compatible with all ML libs
 scipy==1.11.4
-============================================
-COMPUTER VISION
-============================================
+
 opencv-python-headless==4.10.0.84  # Headless for servers
 Pillow==10.4.0
 imageio==2.35.1
 imageio-ffmpeg==0.5.1
 moviepy==1.0.3
-============================================
-DEEP LEARNING (CPU-ONLY)
-============================================
-Install from PyTorch official (CPU version)
-Run: pip install torch==2.5.1+cpu torchvision==0.20.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
+
+pip install torch==2.5.1+cpu torchvision==0.20.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
 torch==2.5.1
 torchvision==0.20.1
-============================================
-FACE RECOGNITION STACK
-============================================
+
 face-recognition==1.3.0
 face-recognition-models==0.3.0
 dlib==19.24.6  # May need cmake and build-essential on Ubuntu
-============================================
-INSIGHTFACE & ONNX
-============================================
+
 insightface==0.7.3
 onnx==1.16.2
 onnxruntime==1.19.2
 protobuf==4.25.5
-============================================
-VECTOR SEARCH (OPTIONAL)
-============================================
+
 faiss-cpu==1.8.0
-============================================
-NETWORKING & ASYNC
-============================================
+
 requests==2.32.3
 aiohttp==3.10.5
 aiosignal==1.3.1
 frozenlist==1.4.1
 multidict==6.1.0
 yarl==1.16.0
-============================================
-REDIS (OPTIONAL - FOR CACHING)
-============================================
+
 redis==5.1.1
 hiredis==3.0.0  # Performance boost for Redis
-============================================
-WEBSOCKETS & SOCKET.IO
-============================================
+
 python-socketio==5.11.4
 python-engineio==4.9.1
 websockets==13.1
-============================================
-NOTIFICATIONS
-============================================
+
 twilio==9.3.6
-============================================
-ML UTILITIES
-============================================
+
 scikit-learn==1.5.2
 joblib==1.4.2
 threadpoolctl==3.5.0
 tqdm==4.66.5
-============================================
-SECURITY & ENCRYPTION
-============================================
+
 cryptography==43.0.3
 cffi==1.17.1
 pycparser==2.22
-============================================
-DATE/TIME UTILITIES
-============================================
+
 python-dateutil==2.9.0.post0
 pytz==2024.2
-============================================
-DEVELOPMENT TOOLS (OPTIONAL)
-============================================
+
 pytest==8.3.3
 pytest-asyncio==0.24.0
 black==24.8.0
