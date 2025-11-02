@@ -346,48 +346,71 @@ def memory_info() -> Dict[str, Any]:
 # Camera management helpers
 # -------------------------------
 def init_cameras(cam_configs=None, open_timeout: float = 2.0):
-    """
-    Initialize multiple cv2.VideoCapture instances with metadata.
+"""
+Initialize multiple cv2.VideoCapture instances with metadata.
+FIXED: Better error handling, prevents storing None in CAMERAS dict
+"""
+if cam_configs is None:
+    cam_configs = [{"id": 0, "name": "Default Cam", "geo": (0.0, 0.0)}]
 
-    If cam_configs is None, initialize a single default camera (id 0).
-    cam_configs is a list of dicts: {"id": <id>, "name": <str>, "geo": (<lat>, <lon>)}
-
-    This function is conservative: it avoids leaving resources open on failure
-    and records camera metadata/status in CAMERA_METADATA.
-    """
-    if cam_configs is None:
-        cam_configs = [{"id": 0, "name": "Default Cam", "geo": (0.0, 0.0)}]
-
-    for cam in cam_configs:
-        cam_id = cam["id"]
-        with _CAMERAS_LOCK:
-            if cam_id in CAMERAS and CAMERAS[cam_id] is not None:
-                # already present
+for cam in cam_configs:
+    cam_id = cam["id"]
+    
+    with _CAMERAS_LOCK:
+        # Skip if already initialized and working
+        if cam_id in CAMERAS:
+            existing_cap = CAMERAS.get(cam_id)
+            if existing_cap is not None and existing_cap.isOpened():
+                logger.info("Camera %s already initialized and working", cam_id)
                 continue
-        try:
-            cap = cv2.VideoCapture(cam_id)
-            # optionally set short timeout/read properties if needed
-            # e.g. cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # reduce buffer
-            time.sleep(0.1)
-            if not cap.isOpened():
-                logger.warning("Camera %s (%s) not available", cam_id, cam.get("name"))
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-                with _CAMERAS_LOCK:
-                    CAMERAS[cam_id] = None
-                    CAMERA_METADATA[cam_id] = {"name": cam.get("name"), "geo": cam.get("geo"), "status": "error"}
-            else:
-                with _CAMERAS_LOCK:
-                    CAMERAS[cam_id] = cap
-                    CAMERA_METADATA[cam_id] = {"name": cam.get("name"), "geo": cam.get("geo"), "status": "ok"}
-                logger.info("Successfully initialized Camera %s (%s)", cam_id, cam.get("name"))
-        except Exception:
-            logger.exception("Error initializing camera %s", cam_id)
+    
+    try:
+        # ✅ FIX: Try to open camera
+        cap = cv2.VideoCapture(cam_id)
+        time.sleep(0.1)  # Small delay for camera to initialize
+        
+        if not cap.isOpened():
+            logger.warning("Camera %s (%s) not available - will NOT store in CAMERAS", cam_id, cam.get("name"))
+            
+            # ✅ CRITICAL: Release failed capture
+            try:
+                cap.release()
+            except Exception:
+                pass
+            
+            # ✅ FIX: Store metadata but mark as unavailable (don't store None cap)
             with _CAMERAS_LOCK:
-                CAMERAS[cam_id] = None
-                CAMERA_METADATA[cam_id] = {"name": cam.get("name"), "geo": cam.get("geo"), "status": "error"}
+                # Don't add to CAMERAS dict if it failed to open
+                CAMERA_METADATA[cam_id] = {
+                    "name": cam.get("name"),
+                    "geo": cam.get("geo"),
+                    "status": "unavailable",
+                    "source": cam_id,
+                    "error": "Failed to open camera"
+                }
+        else:
+            # ✅ SUCCESS: Camera opened properly
+            with _CAMERAS_LOCK:
+                CAMERAS[cam_id] = cap
+                CAMERA_METADATA[cam_id] = {
+                    "name": cam.get("name"),
+                    "geo": cam.get("geo"),
+                    "status": "ok",
+                    "source": cam_id
+                }
+            logger.info("Successfully initialized Camera %s (%s)", cam_id, cam.get("name"))
+            
+    except Exception as e:
+        logger.exception("Error initializing camera %s: %s", cam_id, e)
+        with _CAMERAS_LOCK:
+            # Don't add to CAMERAS on exception
+            CAMERA_METADATA[cam_id] = {
+                "name": cam.get("name"),
+                "geo": cam.get("geo"),
+                "status": "error",
+                "source": cam_id,
+                "error": str(e)
+            }
 
 def get_camera(cam_id):
     """
