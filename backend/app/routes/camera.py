@@ -169,111 +169,107 @@ async def camera_snapshot(camera_id: int, quality: int = Query(95, ge=1, le=100,
 # EXISTING: Process single camera (ENHANCED)
 # -------------------------------
 def process_camera_sync(cam_id: int, cap: cv2.VideoCapture, config: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-"""
-Synchronous camera processing (runs in thread pool)
-ENHANCED: Added NULL safety, better error handling, performance tracking
-"""
-results: List[Dict[str, Any]] = []
-start_time = time.time()
-try:
-    # ✅ CRITICAL FIX: NULL SAFETY CHECK
-    if cap is None:
-        logger.warning("Camera %s has null capture object - skipping", cam_id)
-        return results
-    
-    confidence_threshold = config.get("confidence_threshold", 0.6) if config else 0.6
-    frame_skip = max(1, config.get("frame_skip", 1)) if config else 1
-    max_faces = config.get("max_faces", 10) if config else 10
+    results: List[Dict[str, Any]] = []
+    start_time = time.time()
+    try:
+        # ✅ CRITICAL FIX: NULL SAFETY CHECK
+        if cap is None:
+            logger.warning("Camera %s has null capture object - skipping", cam_id)
+            return results
+        
+        confidence_threshold = config.get("confidence_threshold", 0.6) if config else 0.6
+        frame_skip = max(1, config.get("frame_skip", 1)) if config else 1
+        max_faces = config.get("max_faces", 10) if config else 10
 
-    # ✅ FIXED: Check isOpened only after null check
-    if not cap.isOpened():
-        logger.warning("Camera %s is not opened, attempting reconnect", cam_id)
-        try:
-            # Try to reopen using stored metadata source if available
-            source = CAMERA_METADATA.get(cam_id, {}).get("source", cam_id)
+        # ✅ FIXED: Check isOpened only after null check
+        if not cap.isOpened():
+            logger.warning("Camera %s is not opened, attempting reconnect", cam_id)
             try:
-                source_conv = int(source)
-            except Exception:
-                source_conv = source
-            cap.open(source_conv)
-            if not cap.isOpened():
-                logger.error("Failed to reconnect camera %s", cam_id)
+                # Try to reopen using stored metadata source if available
+                source = CAMERA_METADATA.get(cam_id, {}).get("source", cam_id)
+                try:
+                    source_conv = int(source)
+                except Exception:
+                    source_conv = source
+                cap.open(source_conv)
+                if not cap.isOpened():
+                    logger.error("Failed to reconnect camera %s", cam_id)
+                    return results
+            except Exception as reconnect_error:
+                logger.error("Reconnection failed for camera %s: %s", cam_id, reconnect_error)
                 return results
-        except Exception as reconnect_error:
-            logger.error("Reconnection failed for camera %s: %s", cam_id, reconnect_error)
+
+        # Read a frame; if frame_skip > 1, skip appropriate frames by reading and discarding
+        frame = None
+        for i in range(frame_skip):
+            ret, frame_candidate = cap.read()
+            if not ret:
+                frame = None
+                break
+            frame = frame_candidate
+
+        if frame is None:
+            logger.debug("No frame captured from camera %s", cam_id)
             return results
 
-    # Read a frame; if frame_skip > 1, skip appropriate frames by reading and discarding
-    frame = None
-    for i in range(frame_skip):
-        ret, frame_candidate = cap.read()
-        if not ret:
-            frame = None
-            break
-        frame = frame_candidate
+        # Optionally enforce camera fps limit
+        fps_limit = CAMERA_METADATA.get(cam_id, {}).get("fps_limit")
+        if fps_limit:
+            elapsed = time.time() - start_time
+            min_interval = 1.0 / float(fps_limit)
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
 
-    if frame is None:
-        logger.debug("No frame captured from camera %s", cam_id)
-        return results
-
-    # Optionally enforce camera fps limit
-    fps_limit = CAMERA_METADATA.get(cam_id, {}).get("fps_limit")
-    if fps_limit:
-        elapsed = time.time() - start_time
-        min_interval = 1.0 / float(fps_limit)
-        if elapsed < min_interval:
-            time.sleep(min_interval - elapsed)
-
-    # Convert to RGB for face_recognition
-    try:
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    except Exception as cvt_err:
-        logger.error("Failed to convert frame color for camera %s: %s", cam_id, cvt_err)
-        return results
-
-    # Detect faces with protections
-    try:
-        face_locations = face_recognition.face_locations(rgb)
-        if len(face_locations) > max_faces:
-            logger.warning("Camera %s: Detected %d faces, limiting to %d", cam_id, len(face_locations), max_faces)
-            face_locations = face_locations[:max_faces]
-
-        faces_enc = face_recognition.face_encodings(rgb, face_locations)
-    except Exception as face_error:
-        logger.error("Face detection error on camera %s: %s", cam_id, face_error, exc_info=True)
-        return results
-
-    # Compare against stored faces using face_service
-    for face_encoding in faces_enc:
+        # Convert to RGB for face_recognition
         try:
-            matches = face_service.compare_faces(face_encoding, target_names=None, return_distances=True)
-            for match in matches:
-                distance = match.get("distance", 0.0)
-                confidence = match.get("confidence", 1.0)
-                target = match.get("target")
-                if match.get("match") and distance <= confidence_threshold:
-                    results.append({
-                        "camera_id": cam_id,
-                        "target": target,
-                        "distance": distance,
-                        "confidence": confidence
-                    })
-        except Exception as match_error:
-            logger.error("Face matching error on camera %s: %s", cam_id, match_error, exc_info=True)
-            continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        except Exception as cvt_err:
+            logger.error("Failed to convert frame color for camera %s: %s", cam_id, cvt_err)
+            return results
 
-    # Update performance metrics
-    processing_time = time.time() - start_time
-    with _performance_lock:
-        perf = camera_performance.setdefault(cam_id, {"total_frames": 0, "total_time": 0.0, "avg_fps": 0.0})
-        perf["total_frames"] += 1
-        perf["total_time"] += processing_time
-        perf["avg_fps"] = (perf["total_frames"] / perf["total_time"]) if perf["total_time"] > 0 else 0.0
+        # Detect faces with protections
+        try:
+            face_locations = face_recognition.face_locations(rgb)
+            if len(face_locations) > max_faces:
+                logger.warning("Camera %s: Detected %d faces, limiting to %d", cam_id, len(face_locations), max_faces)
+                face_locations = face_locations[:max_faces]
 
-except Exception as e:
-    logger.error("Error processing camera %s: %s", cam_id, e, exc_info=True)
+            faces_enc = face_recognition.face_encodings(rgb, face_locations)
+        except Exception as face_error:
+            logger.error("Face detection error on camera %s: %s", cam_id, face_error, exc_info=True)
+            return results
 
-return results
+        # Compare against stored faces using face_service
+        for face_encoding in faces_enc:
+            try:
+                matches = face_service.compare_faces(face_encoding, target_names=None, return_distances=True)
+                for match in matches:
+                    distance = match.get("distance", 0.0)
+                    confidence = match.get("confidence", 1.0)
+                    target = match.get("target")
+                    if match.get("match") and distance <= confidence_threshold:
+                        results.append({
+                            "camera_id": cam_id,
+                            "target": target,
+                            "distance": distance,
+                            "confidence": confidence
+                        })
+            except Exception as match_error:
+                logger.error("Face matching error on camera %s: %s", cam_id, match_error, exc_info=True)
+                continue
+
+        # Update performance metrics
+        processing_time = time.time() - start_time
+        with _performance_lock:
+            perf = camera_performance.setdefault(cam_id, {"total_frames": 0, "total_time": 0.0, "avg_fps": 0.0})
+            perf["total_frames"] += 1
+            perf["total_time"] += processing_time
+            perf["avg_fps"] = (perf["total_frames"] / perf["total_time"]) if perf["total_time"] > 0 else 0.0
+
+    except Exception as e:
+        logger.error("Error processing camera %s: %s", cam_id, e, exc_info=True)
+
+    return results
 
 # -------------------------------
 # EXISTING: Async wrapper (ENHANCED)

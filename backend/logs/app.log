@@ -668,3 +668,356 @@ AttributeError: 'NoneType' object has no attribute 'isOpened'
 2025-11-01 12:13:11 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
 2025-11-01 12:13:25 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
 2025-11-01 12:14:05 - app.health_checks - INFO - Health loop cancelled - shutting down
+2025-11-01 19:49:53 - app.services.face_service - INFO - FaceService initialized (model=hog, tolerance=0.600)
+2025-11-01 19:49:53 - app.services.tracking_service - INFO - TrackingService initialized (history_limit=100, cooldown=10s)
+2025-11-01 19:49:53 - app.services.alert_service - INFO - Initializing AlertService
+2025-11-01 19:49:53 - app.services.alert_service - INFO - Loaded watchlist (0) and geofences (0) from DB
+2025-11-01 19:50:18 - app.utils.deepfake_utils - INFO - Initializing DeepfakeDetector on device: cpu
+2025-11-01 19:50:33 - app.utils.deepfake_utils - INFO - InsightFace FaceAnalysis (RetinaFace) loaded successfully.
+2025-11-01 19:50:34 - app.utils.deepfake_utils - WARNING - Deepfake model weights not found at models/deepfake_mobilenet.pth. The classifier will run untrained if used.
+2025-11-01 19:50:35 - app.state - INFO - Successfully initialized Camera 0 (Shivaji Nagar Chauk 1)
+2025-11-01 19:50:36 - app.state - WARNING - Camera 1 (Pune Station) not available
+2025-11-01 19:50:36 - app.state - WARNING - Camera 2 (FC Road Signal) not available
+2025-11-01 19:50:36 - app.state - WARNING - Camera 3 (Kothrud Square) not available
+2025-11-01 19:50:36 - app.state - WARNING - Camera 4 (Swargate Bus Stop) not available
+2025-11-01 19:50:36 - app.health_checks - INFO - Starting health loop (interval=30)
+2025-11-01 19:50:36 - app.health_checks - INFO - Using sync pymongo client for health checks (run in executor)
+2025-11-01 19:51:56 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:56 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:56 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:56 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.services.face_service - WARNING - No targets available for comparison
+2025-11-01 19:51:58 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:51:58 - app.routes.camera - INFO - Camera alerts scan completed in 2.32s
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.services.face_service - WARNING - No targets available for comparison
+2025-11-01 19:51:58 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:51:58 - app.routes.camera - INFO - Camera alerts scan completed in 0.31s
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:58 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:51:59 - app.services.face_service - WARNING - No targets available for comparison
+2025-11-01 19:51:59 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:51:59 - app.routes.camera - INFO - Camera alerts scan completed in 0.31s
+2025-11-01 19:52:27 - app.routes.face - INFO - Processing face upload for target: modi (filename: modi.png)
+2025-11-01 19:52:27 - app.services.face_service - INFO - Encoded 1 face(s) in 0.288s (io+proc=0.034s)
+2025-11-01 19:52:27 - app.routes.face - INFO - Face quality score for modi: 80.65
+2025-11-01 19:52:28 - app.services.face_service - INFO - Face stored successfully for 'modi'
+2025-11-01 19:52:28 - app.routes.face - INFO - Successfully enrolled face for: modi
+2025-11-01 19:52:37 - app.routes.federated - INFO - Receiving FL weights from client 'pm' for round 0
+2025-11-01 19:52:37 - app.routes.federated - WARNING - Unregistered client 'pm' attempting upload. Auto-registering.
+2025-11-01 19:52:38 - app.routes.federated - INFO - Successfully stored FL weights for client 'pm' (round 0)
+2025-11-01 19:52:42 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-01 19:52:46 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-01 19:52:50 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-01 19:54:04 - app.health_checks - INFO - Health loop cancelled - shutting down
+2025-11-01 19:57:43 - app.services.face_service - INFO - FaceService initialized (model=hog, tolerance=0.600)
+2025-11-01 19:57:43 - app.services.tracking_service - INFO - TrackingService initialized (history_limit=100, cooldown=10s)
+2025-11-01 19:57:43 - app.services.alert_service - INFO - Initializing AlertService
+2025-11-01 19:57:43 - app.services.alert_service - INFO - Loaded watchlist (0) and geofences (0) from DB
+2025-11-01 19:57:48 - app.utils.deepfake_utils - INFO - Initializing DeepfakeDetector on device: cpu
+2025-11-01 19:57:52 - app.utils.deepfake_utils - INFO - InsightFace FaceAnalysis (RetinaFace) loaded successfully.
+2025-11-01 19:57:52 - app.utils.deepfake_utils - WARNING - Deepfake model weights not found at models/deepfake_mobilenet.pth. The classifier will run untrained if used.
+2025-11-01 19:57:53 - app.state - INFO - Successfully initialized Camera 0 (Shivaji Nagar Chauk 1)
+2025-11-01 19:57:53 - app.state - WARNING - Camera 1 (Pune Station) not available
+2025-11-01 19:57:53 - app.state - WARNING - Camera 2 (FC Road Signal) not available
+2025-11-01 19:57:53 - app.state - WARNING - Camera 3 (Kothrud Square) not available
+2025-11-01 19:57:53 - app.state - WARNING - Camera 4 (Swargate Bus Stop) not available
+2025-11-01 19:57:53 - app.health_checks - INFO - Starting health loop (interval=30)
+2025-11-01 19:57:53 - app.health_checks - INFO - Using sync pymongo client for health checks (run in executor)
+2025-11-01 19:58:09 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:09 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:09 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:09 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:10 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:58:10 - app.routes.camera - INFO - Camera alerts scan completed in 0.48s
+2025-11-01 19:58:10 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:10 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:10 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:10 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:10 - app.services.face_service - WARNING - No targets available for comparison
+2025-11-01 19:58:10 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:58:10 - app.routes.camera - INFO - Camera alerts scan completed in 0.86s
+2025-11-01 19:58:11 - app.routes.camera - ERROR - Error processing camera 1: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:11 - app.routes.camera - ERROR - Error processing camera 2: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:11 - app.routes.camera - ERROR - Error processing camera 3: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:11 - app.routes.camera - ERROR - Error processing camera 4: 'NoneType' object has no attribute 'isOpened'
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 184, in process_camera_sync
+    if not cap.isOpened():
+AttributeError: 'NoneType' object has no attribute 'isOpened'
+2025-11-01 19:58:11 - app.routes.camera - INFO - Detected 0 face matches across 5 cameras
+2025-11-01 19:58:11 - app.routes.camera - INFO - Camera alerts scan completed in 0.62s
+2025-11-01 19:59:41 - app.routes.face - INFO - Processing face upload for target: selfportrait (filename: selfportrait.jpeg)
+2025-11-01 19:59:42 - app.services.face_service - INFO - Encoded 2 face(s) in 0.910s (io+proc=0.069s)
+2025-11-01 19:59:42 - app.routes.face - WARNING - Multiple faces detected in upload for selfportrait: 2
+2025-11-01 20:00:01 - app.routes.face - INFO - Processing face upload for target: WhatsApp Image 2025-09-12 at 1.02.36 AM (filename: WhatsApp Image 2025-09-12 at 1.02.36 AM.jpeg)
+2025-11-01 20:00:02 - app.services.face_service - INFO - Encoded 1 face(s) in 1.367s (io+proc=0.040s)
+2025-11-01 20:00:02 - app.routes.face - INFO - Face quality score for WhatsApp Image 2025-09-12 at 1.02.36 AM: 66.46
+2025-11-01 20:00:03 - app.services.face_service - INFO - Face stored successfully for 'WhatsApp Image 2025-09-12 at 1.02.36 AM'
+2025-11-01 20:00:03 - app.routes.face - INFO - Successfully enrolled face for: WhatsApp Image 2025-09-12 at 1.02.36 AM
+2025-11-01 20:00:20 - app.routes.federated - INFO - Receiving FL weights from client 'bhai' for round 0
+2025-11-01 20:00:20 - app.routes.federated - WARNING - Unregistered client 'bhai' attempting upload. Auto-registering.
+2025-11-01 20:00:20 - app.routes.federated - INFO - Successfully stored FL weights for client 'bhai' (round 0)
+2025-11-01 20:00:24 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-01 20:00:30 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-01 20:01:27 - app.health_checks - INFO - Health loop cancelled - shutting down
+2025-11-03 23:34:02 - app.services.face_service - INFO - FaceService initialized (model=hog, tolerance=0.600)
+2025-11-03 23:34:02 - app.services.tracking_service - INFO - TrackingService initialized (history_limit=100, cooldown=10s)
+2025-11-03 23:34:02 - app.services.alert_service - INFO - Initializing AlertService
+2025-11-03 23:34:02 - app.services.alert_service - INFO - Loaded watchlist (0) and geofences (0) from DB
+2025-11-03 23:34:25 - app.utils.deepfake_utils - INFO - Initializing DeepfakeDetector on device: cpu
+2025-11-03 23:34:43 - app.utils.deepfake_utils - INFO - InsightFace FaceAnalysis (RetinaFace) loaded successfully.
+2025-11-03 23:34:45 - app.utils.deepfake_utils - WARNING - Deepfake model weights not found at models/deepfake_mobilenet.pth. The classifier will run untrained if used.
+2025-11-03 23:34:46 - app.state - INFO - Successfully initialized Camera 0 (Shivaji Nagar Chauk 1)
+2025-11-03 23:34:47 - app.state - WARNING - Camera 1 (Pune Station) not available - will NOT store in CAMERAS
+2025-11-03 23:34:47 - app.state - WARNING - Camera 2 (FC Road Signal) not available - will NOT store in CAMERAS
+2025-11-03 23:34:47 - app.state - WARNING - Camera 3 (Kothrud Square) not available - will NOT store in CAMERAS
+2025-11-03 23:34:47 - app.state - WARNING - Camera 4 (Swargate Bus Stop) not available - will NOT store in CAMERAS
+2025-11-03 23:34:48 - app.health_checks - INFO - Starting health loop (interval=30)
+2025-11-03 23:34:48 - app.health_checks - INFO - Using sync pymongo client for health checks (run in executor)
+2025-11-03 23:36:11 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-03 23:36:11 - app.routes.camera - INFO - Camera alerts scan completed in 0.55s
+2025-11-03 23:36:14 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-03 23:36:14 - app.routes.camera - INFO - Camera alerts scan completed in 2.21s
+2025-11-03 23:36:14 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-03 23:36:14 - app.routes.camera - INFO - Camera alerts scan completed in 0.24s
+2025-11-03 23:36:51 - app.routes.face - INFO - Processing face upload for target: modi (filename: modi.png)
+2025-11-03 23:36:51 - app.services.face_service - INFO - Encoded 1 face(s) in 0.341s (io+proc=0.093s)
+2025-11-03 23:36:51 - app.routes.face - INFO - Face quality score for modi: 80.65
+2025-11-03 23:36:52 - app.services.face_service - INFO - Face stored successfully for 'modi'
+2025-11-03 23:36:52 - app.routes.face - INFO - Successfully enrolled face for: modi
+2025-11-03 23:37:00 - app.routes.federated - INFO - Receiving FL weights from client 'client_5' for round 0
+2025-11-03 23:37:00 - app.routes.federated - WARNING - Unregistered client 'client_5' attempting upload. Auto-registering.
+2025-11-03 23:37:01 - app.routes.federated - INFO - Successfully stored FL weights for client 'client_5' (round 0)
+2025-11-03 23:37:06 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-03 23:37:10 - app.routes.federated - INFO - Starting model aggregation with algorithm=fedavg
+2025-11-03 23:39:09 - app.health_checks - INFO - Health loop cancelled - shutting down
+2025-11-04 00:17:41 - app.services.face_service - INFO - FaceService initialized (model=hog, tolerance=0.600)
+2025-11-04 00:17:41 - app.services.tracking_service - INFO - TrackingService initialized (history_limit=100, cooldown=10s)
+2025-11-04 00:17:41 - app.services.alert_service - INFO - Initializing AlertService
+2025-11-04 00:17:41 - app.services.alert_service - INFO - Loaded watchlist (0) and geofences (0) from DB
+2025-11-04 00:17:53 - app.utils.deepfake_utils - INFO - Initializing DeepfakeDetector on device: cpu
+2025-11-04 00:18:10 - app.utils.deepfake_utils - INFO - InsightFace FaceAnalysis (RetinaFace) loaded successfully.
+2025-11-04 00:18:11 - app.utils.deepfake_utils - WARNING - Deepfake model weights not found at models/deepfake_mobilenet.pth. The classifier will run untrained if used.
+2025-11-04 00:18:12 - app.state - INFO - Successfully initialized Camera 0 (Shivaji Nagar Chauk 1)
+2025-11-04 00:18:12 - app.state - WARNING - Camera 1 (Pune Station) not available - will NOT store in CAMERAS
+2025-11-04 00:18:12 - app.state - WARNING - Camera 2 (FC Road Signal) not available - will NOT store in CAMERAS
+2025-11-04 00:18:12 - app.state - WARNING - Camera 3 (Kothrud Square) not available - will NOT store in CAMERAS
+2025-11-04 00:18:12 - app.state - WARNING - Camera 4 (Swargate Bus Stop) not available - will NOT store in CAMERAS
+2025-11-04 00:18:12 - app.health_checks - INFO - Starting health loop (interval=30)
+2025-11-04 00:18:12 - app.health_checks - INFO - Using sync pymongo client for health checks (run in executor)
+2025-11-04 00:19:10 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:10 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:10 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:10 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:11 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:11 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:11 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:11 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:11 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:11 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:11 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:11 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:12 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:12 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:12 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:12 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:12 - app.routes.camera - INFO - Detected 0 face matches across 1 cameras
+2025-11-04 00:19:12 - app.routes.camera - ERROR - Error in camera alerts: local variable 'detection' referenced before assignment
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 325, in camera_alerts
+    tracking_result = tracking_service.record_detection(...)
+TypeError: TrackingService.record_detection() missing 2 required positional arguments: 'camera_id' and 'distance'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/atharva04/Desktop/face-recognition-platform/backend/app/routes/camera.py", line 335, in camera_alerts
+    logger.error("Tracking service failed for detection %s: %s", detection, te)
+UnboundLocalError: local variable 'detection' referenced before assignment
+2025-11-04 00:19:43 - app.health_checks - INFO - Health loop cancelled - shutting down
